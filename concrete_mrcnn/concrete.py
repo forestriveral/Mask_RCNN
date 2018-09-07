@@ -88,10 +88,8 @@ class ConcreteConfig(Config):
     # use small validation steps since the epoch is small
     VALIDATION_STEPS = 5
 
-
-config = ConcreteConfig()
+# config = ConcreteConfig()
 # config.display()
-
 
 def get_ax(rows=1, cols=1, size=8):
     """Return a Matplotlib Axes array to be used in
@@ -114,7 +112,7 @@ class ConcreteDataset(utils.Dataset):
     The images are generated on the fly. No file access required.
     """
 
-    def load_concrete(self, dataset_dir="../datasets", subset="train", return_coco=False):
+    def load_concrete(self, dataset_dir, subset, return_coco=False):
         """Generate the requested number of synthetic images.
         count: number of images to generate.
         height, width: the size of the generated images.
@@ -273,7 +271,7 @@ def build_concrete_results(dataset, image_ids, rois, class_ids, scores, masks):
     return results
 
 
-def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
+def evaluate_concrete(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
     """Runs official COCO evaluation.
     dataset: A Dataset object with valiadtion data
     eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
@@ -328,38 +326,144 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
 #  Training
 ############################################################
 
-def train(model, dataset_dir, subset):
-    """Train the model."""
-    # Training dataset.
-    dataset_train = ConcreteDataset()
-    dataset_train.load_concrete(dataset_dir, subset)
-    dataset_train.prepare()
+if __name__ == '__main__':
+    import argparse
 
-    # Validation dataset
-    dataset_val = NucleusDataset()
-    dataset_val.load_concrete(dataset_dir, subset)
-    dataset_val.prepare()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Train Mask R-CNN on Concrete COCO-datasets.')
+    parser.add_argument("command",
+                        metavar="<command>",
+                        help="'train' or 'evaluate' on Concrete COCO-datasets")
+    parser.add_argument('--model', required=True,
+                        metavar="/path/to/weights.h5",
+                        help="Path to weights .h5 file or 'coco'")
+    parser.add_argument('--dataset', required=False,
+                        default="../datasets",
+                        metavar="/path/to/coco/",
+                        help='Directory of the Concrete COCO-datasets dataset')
+    parser.add_argument('--train mode', required=False,
+                        default= 1,
+                        metavar="Training - Stage 1 ,2 or 3",
+                        help="Choose to train in different stages: \n" +
+                             "Stage 1 ==> Training network heads (default) \n" +
+                             "Stage 2 ==> Fine tune Resnet stage 4 and up \n" +
+                             "Stage 3 ==> Fine tune all layers \n")
+    parser.add_argument('--logs', required=False,
+                        default=DEFAULT_LOGS_DIR,
+                        metavar="/path/to/logs/",
+                        help='Logs and checkpoints directory (default=logs/)')
+    parser.add_argument('--limit', required=False,
+                        default= 20,
+                        metavar="<image count>",
+                        help='Images to use for evaluation (default=20)')
 
-    # *** This training schedule is an example. Update to your needs ***
+    args = parser.parse_args()
+    print("Command: ", args.command)
+    print("Model: ", args.model)
+    print("Dataset: ", args.dataset)
+    print("Logs: ", args.logs)
+    print("Train mode: ", args.train_mode)
 
-    # If starting from imagenet, train heads only for a bit
-    # since they have random weights
-    print("Train network heads")
-    model.train(dataset_train, dataset_val,
-                learning_rate=config.LEARNING_RATE,
-                epochs=20,
-                augmentation=augmentation,
-                layers='heads')
+    # Configurations
+    if args.command == "train":
+        config = ConcreteConfig()
+    else:
+        class InferenceConfig(ConcreteConfig):
+            # Set batch size to 1 since we'll be running inference on
+            # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 1
+            DETECTION_MIN_CONFIDENCE = 0
+        config = InferenceConfig()
+    config.display()
 
-    print("Train all layers")
-    model.train(dataset_train, dataset_val,
-                learning_rate=config.LEARNING_RATE,
-                epochs=40,
-                augmentation=augmentation,
-                layers='all')
+    # Create model
+    if args.command == "train":
+        model = modellib.MaskRCNN(mode="training", config=config,
+                                  model_dir=args.logs)
+    else:
+        model = modellib.MaskRCNN(mode="inference", config=config,
+                                  model_dir=args.logs)
 
+    # Select weights file to load
+    if args.model.lower() == "coco":
+        model_path = COCO_WEIGHTS_PATH
+    elif args.model.lower() == "last":
+        # Find last trained weights
+        model_path = model.find_last()
+    # elif args.model.lower() == "imagenet":
+    #     # Start from ImageNet trained weights
+    #     model_path = model.get_imagenet_weights()
+    else:
+        model_path = args.model
 
+    # Load weights
+    print("Loading weights ", model_path)
+    model.load_weights(model_path, by_name=True)
 
+    # Train or evaluate
+    if args.command == "train":
+        # Training dataset. Use the training set and 35K from the
+        # validation set, as as in the Mask RCNN paper.
+        dataset_train = ConcreteDataset()
+        dataset_train.load_concrete(args.dataset, "train")
+        dataset_train.prepare()
+
+        # Validation dataset
+        dataset_val = ConcreteDataset()
+        val_type = "val"
+        dataset_val.load_concrete(args.dataset, val_type)
+        dataset_val.prepare()
+
+        # Image Augmentation
+        # Right/Left flip 50% of the time
+        augmentation = imgaug.augmenters.Fliplr(0.5)
+
+        # *** This training schedule is an example. Update to your needs ***
+
+        if args.train_mode == "1":
+            # Training - Stage 1
+            print("Training network heads")
+            model.train(dataset_train, dataset_val,
+                        learning_rate=config.LEARNING_RATE,
+                        epochs=40,
+                        layers='heads',
+                        augmentation=augmentation)
+
+        elif args.train_mode == "2":
+            # Training - Stage 2
+            # Finetune layers from ResNet stage 4 and up
+            print("Fine tune Resnet stage 4 and up")
+            model.train(dataset_train, dataset_val,
+                        learning_rate=config.LEARNING_RATE,
+                        epochs=120,
+                        layers='4+',
+                        augmentation=augmentation)
+
+        elif args.train_mode == "3":
+            # Training - Stage 3
+            # Fine tune all layers
+            print("Fine tune all layers")
+            model.train(dataset_train, dataset_val,
+                        learning_rate=config.LEARNING_RATE / 10,
+                        epochs=160,
+                        layers='all',
+                        augmentation=augmentation)
+        else:
+            print("Invalid train mode")
+
+    elif args.command == "evaluate":
+        # Validation dataset
+        dataset_val = ConcreteDataset()
+        val_type = "val"
+        coco = dataset_val.load_concrete(args.dataset, val_type, return_coco=True)
+        dataset_val.prepare()
+        print("Running COCO evaluation on {} images.".format(args.limit))
+        evaluate_concrete(model, dataset_val, coco, "bbox", limit=int(args.limit))
+    else:
+        print("'{}' is not recognized. "
+              "Use 'train' or 'evaluate'".format(args.command))
 
 
 
