@@ -7,7 +7,7 @@ import sys
 # import random
 # import math
 # import re
-import time
+# import time
 import numpy as np
 import cv2
 import imgaug
@@ -50,6 +50,9 @@ RESULTS_DIR = os.path.join(ROOT_DIR, "results/concrete/")
 # if not os.path.exists(COCO_MODEL_PATH):
 #     utils.download_trained_weights(COCO_MODEL_PATH)
 
+############################################################
+#  Configurations
+############################################################
 
 class ConcreteConfig(Config):
     """Configuration for training on the toy shapes dataset.
@@ -101,6 +104,9 @@ def get_ax(rows=1, cols=1, size=8):
     _, ax = plt.subplots(rows, cols, figsize=(size * cols, size * rows))
     return ax
 
+############################################################
+#  Dataset
+############################################################
 
 class ConcreteDataset(utils.Dataset):
     """Generates the shapes synthetic dataset. The dataset consists of simple
@@ -146,8 +152,9 @@ class ConcreteDataset(utils.Dataset):
     def image_reference(self, image_id):
         """Return the shapes data of the image."""
         info = self.image_info[image_id]
+        # print(info)
         if info["source"] == "concrete":
-            return info["id"]
+            return info["path"]
         else:
             super(self.__class__).image_reference(self, image_id)
 
@@ -215,7 +222,7 @@ class ConcreteDataset(utils.Dataset):
         segm = ann['segmentation']
         if isinstance(segm, list):
             # polygon -- a single object might consist of multiple parts
-            # we merge all parts into one mask rle code
+            # we merge all parts into one mask rle concrete_mrcnn
             rles = maskUtils.frPyObjects(segm, height, width)
             rle = maskUtils.merge(rles)
         elif isinstance(segm['counts'], list):
@@ -234,6 +241,125 @@ class ConcreteDataset(utils.Dataset):
         rle = self.annToRLE(ann, height, width)
         m = maskUtils.decode(rle)
         return m
+
+############################################################
+#  Evaluation
+############################################################
+
+def build_concrete_results(dataset, image_ids, rois, class_ids, scores, masks):
+    """Arrange resutls to match COCO specs in http://cocodataset.org/#format
+    """
+    # If no results, return an empty list
+    if rois is None:
+        return []
+
+    results = []
+    for image_id in image_ids:
+        # Loop through detections
+        for i in range(rois.shape[0]):
+            class_id = class_ids[i]
+            score = scores[i]
+            bbox = np.around(rois[i], 1)
+            mask = masks[:, :, i]
+
+            result = {
+                "image_id": image_id,
+                "category_id": dataset.get_source_class_id(class_id, "coco"),
+                "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
+                "score": score,
+                "segmentation": maskUtils.encode(np.asfortranarray(mask))
+            }
+            results.append(result)
+    return results
+
+
+def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
+    """Runs official COCO evaluation.
+    dataset: A Dataset object with valiadtion data
+    eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
+    limit: if not 0, it's the number of images to use for evaluation
+    """
+    # Pick COCO images from the dataset
+    image_ids = image_ids or dataset.image_ids
+
+    # Limit to a subset
+    if limit:
+        image_ids = image_ids[:limit]
+
+    # Get corresponding COCO image IDs.
+    concrete_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
+
+    t_prediction = 0
+    t_start = time.time()
+
+    results = []
+    for i, image_id in enumerate(image_ids):
+        # Load image
+        image = dataset.load_image(image_id)
+
+        # Run detection
+        t = time.time()
+        r = model.detect([image], verbose=0)[0]
+        t_prediction += (time.time() - t)
+
+        # Convert results to COCO format
+        # Cast masks to uint8 because COCO tools errors out on bool
+        image_results = build_concrete_results(dataset, concrete_image_ids[i:i + 1],
+                                           r["rois"], r["class_ids"],
+                                           r["scores"],
+                                           r["masks"].astype(np.uint8))
+        results.extend(image_results)
+
+    # Load results. This modifies results with additional attributes.
+    concrete_results = coco.loadRes(results)
+
+    # Evaluate
+    cocoEval = COCOeval(coco, concrete_results, eval_type)
+    cocoEval.params.imgIds = concrete_image_ids
+    cocoEval.evaluate()
+    cocoEval.accumulate()
+    cocoEval.summarize()
+
+    print("Prediction time: {}. Average {}/image".format(
+        t_prediction, t_prediction / len(image_ids)))
+    print("Total time: ", time.time() - t_start)
+
+############################################################
+#  Training
+############################################################
+
+def train(model, dataset_dir, subset):
+    """Train the model."""
+    # Training dataset.
+    dataset_train = ConcreteDataset()
+    dataset_train.load_concrete(dataset_dir, subset)
+    dataset_train.prepare()
+
+    # Validation dataset
+    dataset_val = NucleusDataset()
+    dataset_val.load_concrete(dataset_dir, subset)
+    dataset_val.prepare()
+
+    # *** This training schedule is an example. Update to your needs ***
+
+    # If starting from imagenet, train heads only for a bit
+    # since they have random weights
+    print("Train network heads")
+    model.train(dataset_train, dataset_val,
+                learning_rate=config.LEARNING_RATE,
+                epochs=20,
+                augmentation=augmentation,
+                layers='heads')
+
+    print("Train all layers")
+    model.train(dataset_train, dataset_val,
+                learning_rate=config.LEARNING_RATE,
+                epochs=40,
+                augmentation=augmentation,
+                layers='all')
+
+
+
 
 
 

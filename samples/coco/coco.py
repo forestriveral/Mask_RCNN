@@ -1,6 +1,6 @@
 """
 Mask R-CNN
-Configurations and data loading code for MS COCO.
+Configurations and data loading concrete_mrcnn for MS COCO.
 
 Copyright (c) 2017 Matterport, Inc.
 Licensed under the MIT License (see LICENSE for details)
@@ -287,7 +287,7 @@ class CocoDataset(utils.Dataset):
         segm = ann['segmentation']
         if isinstance(segm, list):
             # polygon -- a single object might consist of multiple parts
-            # we merge all parts into one mask rle code
+            # we merge all parts into one mask rle concrete_mrcnn
             rles = maskUtils.frPyObjects(segm, height, width)
             rle = maskUtils.merge(rles)
         elif isinstance(segm['counts'], list):

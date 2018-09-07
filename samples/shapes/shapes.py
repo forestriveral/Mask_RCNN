@@ -1,7 +1,7 @@
 """
 Mask R-CNN
-Configurations and data loading code for the synthetic Shapes dataset.
-This is a duplicate of the code in the noteobook train_shapes.ipynb for easy
+Configurations and data loading concrete_mrcnn for the synthetic Shapes dataset.
+This is a duplicate of the concrete_mrcnn in the noteobook train_shapes.ipynb for easy
 import into other notebooks, such as inspect_model.ipynb.
 
 Copyright (c) 2017 Matterport, Inc.

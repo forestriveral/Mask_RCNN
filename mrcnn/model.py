@@ -1071,7 +1071,7 @@ def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
                                    config.IMAGES_PER_GPU)
 
     # TODO: use smooth_l1_loss() rather than reimplementing here
-    #       to reduce code duplication
+    #       to reduce concrete_mrcnn duplication
     diff = K.abs(target_bbox - rpn_bbox)
     less_than_one = K.cast(K.less(diff, 1.0), "float32")
     loss = (less_than_one * 0.5 * diff**2) + (1 - less_than_one) * (diff - 0.5)
@@ -1530,7 +1530,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # to match the corresponding GT boxes.
     ids = np.where(rpn_match == 1)[0]
     ix = 0  # index into rpn_bbox
-    # TODO: use box_refinement() rather than duplicating the code here
+    # TODO: use box_refinement() rather than duplicating the concrete_mrcnn here
     for i, a in zip(ids, anchors[ids]):
         # Closest gt box (it might have IoU < 0.7)
         gt = gt_boxes[anchor_iou_argmax[i]]
@@ -2246,7 +2246,7 @@ class MaskRCNN():
     def set_log_dir(self, model_path=None):
         """Sets the model log directory and epoch counter.
 
-        model_path: If None, or a format different from what this code uses
+        model_path: If None, or a format different from what this concrete_mrcnn uses
             then set a new log directory and start epochs from 0. Otherwise,
             extract the log directory and the epoch counter from the file
             name.
@@ -2265,7 +2265,7 @@ class MaskRCNN():
             if m:
                 now = datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
                                         int(m.group(4)), int(m.group(5)))
-                # Epoch number in file is 1-based, and in Keras code it's 0-based.
+                # Epoch number in file is 1-based, and in Keras concrete_mrcnn it's 0-based.
                 # So, adjust for that then increment by one to start from the next epoch
                 self.epoch = int(m.group(6)) - 1 + 1
                 print('Re-starting from epoch %d' % self.epoch)

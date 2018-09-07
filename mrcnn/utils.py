@@ -561,7 +561,7 @@ def expand_mask(bbox, mini_mask, image_shape):
     return mask
 
 
-# TODO: Build and use this function to reduce code duplication
+# TODO: Build and use this function to reduce concrete_mrcnn duplication
 def mold_mask(mask, config):
     pass
 
@@ -806,8 +806,8 @@ def compute_recall(pred_boxes, gt_boxes, iou):
 # Some custom layers support a batch size of 1 only, and require a lot of work
 # to support batches greater than 1. This function slices an input tensor
 # across the batch dimension and feeds batches of size 1. Effectively,
-# an easy way to support batches > 1 quickly with little code modification.
-# In the long run, it's more efficient to modify the code to support large
+# an easy way to support batches > 1 quickly with little concrete_mrcnn modification.
+# In the long run, it's more efficient to modify the concrete_mrcnn to support large
 # batches and getting rid of this function. Consider this a temporary solution
 def batch_slice(inputs, graph_fn, batch_size, names=None):
     """Splits inputs into slices and feeds each slice to a copy of the given
