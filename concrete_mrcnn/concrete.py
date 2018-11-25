@@ -4,10 +4,10 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # import json
 import sys
-# import random
+import random
 # import math
 # import re
-# import time
+import time
 import numpy as np
 import cv2
 import imgaug
@@ -16,7 +16,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # Root directory of the project
-ROOT_DIR = os.path.abspath(".")
+ROOT_DIR = os.path.abspath("../")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
@@ -30,10 +30,6 @@ from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from pycocotools import mask as maskUtils
 
-# Import COCO config
-# sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))  # To find local version
-# import coco
-
 # %matplotlib inline
 DATASETS_PATH = "datasets"
 
@@ -41,19 +37,15 @@ DATASETS_PATH = "datasets"
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 
 # Local path to trained weights file
-COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mrcnn/mask_rcnn_coco.h5")
+COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 
 # Results directory
 # Save submission files here
-RESULTS_DIR = os.path.join(ROOT_DIR, "results/concrete/")
+RESULTS_DIR = os.path.join(ROOT_DIR, "output/concrete/")
 
 # Directory of images to run detection on
-# IMAGE_DIR = os.path.join(ROOT_DIR, "images")
-IMAGE_DIR = os.path.join(ROOT_DIR, DATASETS_PATH, "images")
+IMAGE_DIR = os.path.join(ROOT_DIR, DATASETS_PATH)
 
-# Download COCO trained weights from Releases if needed
-# if not os.path.exists(COCO_MODEL_PATH):
-#     utils.download_trained_weights(COCO_MODEL_PATH)
 
 ############################################################
 #  Configurations
@@ -73,12 +65,16 @@ class ConcreteConfig(Config):
     IMAGES_PER_GPU = 4
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 2  # background + 3 shapes
+    # NUM_CLASSES = 1 + 2  # background + 3 shapes
+    NUM_CLASSES = 1 + 1  # background + 3 shapes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
+    IMAGE_RESIZE_MODE = "square"
     IMAGE_MIN_DIM = 256
     IMAGE_MAX_DIM = 256
+
+    IMAGE_MIN_SCALE = 0
 
     # Use smaller anchors because our image and objects are small
     RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)  # anchor side in pixels
@@ -106,6 +102,7 @@ class InferenceConfig(ConcreteConfig):
 
     # Don't resize imager for inferencing
     IMAGE_RESIZE_MODE = "pad64"
+
     # Non-max suppression threshold to filter RPN proposals.
     # You can increase this during training to generate more propsals.
     RPN_NMS_THRESHOLD = 0.7
@@ -132,20 +129,18 @@ class ConcreteDataset(utils.Dataset):
     The images are generated on the fly. No file access required.
     """
 
-    def load_concrete(self, dataset_dir, subset, return_coco=False):
+    def load_concrete(self, dataset_dir, subset, version, return_coco=False,
+                      dataset_name="concrete"):
         """Generate the requested number of synthetic images.
         count: number of images to generate.
         height, width: the size of the generated images.
         """
-        # Add classes
-        # self.add_class("concrete", 1, "bughole")
-        # self.add_class("concrete", 2, "crack")
 
         # Train or validation dataset?
-        assert subset in ["train", "val", "test"]
+        assert subset in ["train", "val", "test"], "Invalid subset"
         if subset == "train" or "val":
-            coco = COCO("{}/annotations/{}.json".format(dataset_dir, subset))
-            image_dir = "{}/{}".format(dataset_dir, subset)
+            coco = COCO("{}/annotations/{}_{}{}.json".format(dataset_dir, dataset_name, subset, version))
+            image_dir = "{}/{}{}".format(dataset_dir, subset, version)
 
             # Get class and images ids
             class_ids = sorted(coco.getCatIds())
@@ -167,7 +162,7 @@ class ConcreteDataset(utils.Dataset):
             if return_coco:
                 return coco
         else:
-            dataset_path = os.path.join(dataset_dir, subset)
+            dataset_path = os.path.join(dataset_dir, subset + version)
             # Get image ids from directory names
             image_ids = next(os.walk(dataset_path))[2]
 
@@ -176,7 +171,7 @@ class ConcreteDataset(utils.Dataset):
                 self.add_image(
                     "concrete",
                     image_id=image_id,
-                    path=os.path.join(dataset_path, "{}.jpg".format(image_id)))
+                    path=os.path.join(dataset_path, "{}.png".format(image_id)))
 
     def image_reference(self, image_id):
         """Return the shapes data of the image."""
@@ -275,17 +270,17 @@ class ConcreteDataset(utils.Dataset):
 #  Training
 ############################################################
 
-def train(model, dataset_dir, subset, train_mode):
+def train(model, dataset_dir, subset, version, train_mode):
     """Train the model."""
     # Training dataset. Use the training set and 35K from the
     # validation set, as as in the Mask RCNN paper.
     dataset_train = ConcreteDataset()
-    dataset_train.load_concrete(dataset_dir, subset)
+    dataset_train.load_concrete(dataset_dir, subset, version)
     dataset_train.prepare()
 
     # Validation dataset
     dataset_val = ConcreteDataset()
-    dataset_val.load_concrete(dataset_dir, "val")
+    dataset_val.load_concrete(dataset_dir, subset, version)
     dataset_val.prepare()
 
     # Image Augmentation
@@ -481,7 +476,7 @@ def mask_to_rle(image_id, mask, scores):
 #  Detection
 ############################################################
 
-def detect(model, dataset_dir, subset):
+def detect(model, dataset_dir, subset, version):
     """Run detection on images in the given directory."""
     print("Running on {}".format(dataset_dir))
 
@@ -496,6 +491,7 @@ def detect(model, dataset_dir, subset):
     dataset = ConcreteDataset()
     dataset.load_concrete(dataset_dir, subset)
     dataset.prepare()
+
     # Load over images
     submission = []
     for image_id in dataset.image_ids:
@@ -513,9 +509,10 @@ def detect(model, dataset_dir, subset):
             dataset.class_names, r['scores'],
             show_bbox=True, show_mask=True,
             title="Predictions")
-        plt.savefig("{}/{}.png".format(submit_dir, dataset.image_info[image_id]["id"]))
+        plt.savefig("{}/{}".format(submit_dir,
+                                   dataset.image_info[image_id]["path"].split('/')[-1]))
 
-    # Save to csv file
+    # Save to CSV file
     submission = "ImageId, EncodedPixels\n" + "\n".join(submission)
     file_path = os.path.join(submit_dir, "submit.csv")
     with open(file_path, "w") as f:
@@ -590,13 +587,13 @@ if __name__ == '__main__':
             print("Invalid Train mode. Use the default mode")
             args.train_mode = "1"
 
+
     # Configurations
     if args.command == "train":
         config = ConcreteConfig()
     else:
         config = InferenceConfig()
     config.display()
-
     # Create model
     if args.command == "train":
         model = modellib.MaskRCNN(mode="training", config=config,
@@ -644,7 +641,7 @@ if __name__ == '__main__':
         if args.subset == "test":
             detect(model, args.dataset, "test")
         else:
-            class_names = ['BG', 'crack', 'bughole']
+            class_names = ['BG', 'bughole']
             file_names = next(os.walk(IMAGE_DIR))[2]
             image = skimage.io.imread(os.path.join(IMAGE_DIR, args.filename))
 
