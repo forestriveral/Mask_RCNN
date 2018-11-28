@@ -17,21 +17,37 @@ import matplotlib.pyplot as plt
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../")
+sys.path.append(ROOT_DIR)  # To find local version of the library
 
 # Import Mask RCNN
-sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import utils
 import mrcnn.model as modellib
 from mrcnn import visualize
 from mrcnn.model import log
+# Import COCO config
+# sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))  # To find local version
+# import coco
 
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from pycocotools import mask as maskUtils
 
+import tensorflow as tf
+import keras.backend.tensorflow_backend as KTF
+from keras.callbacks import CSVLogger
+
+config = tf.ConfigProto(allow_soft_placement=True,
+                        log_device_placement=False)
+config.gpu_options.allow_growth=True
+
+sess = tf.Session(config=config)
+
+# session
+KTF.set_session(sess)
+
 # %matplotlib inline
-DATASETS_PATH = "datasets"
+DATASETS_PATH = os.path.join(ROOT_DIR, "datasets")
 
 # Directory to save logs and trained model
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
@@ -43,8 +59,8 @@ COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 # Save submission files here
 RESULTS_DIR = os.path.join(ROOT_DIR, "output/concrete/")
 
-# Directory of images to run detection on
-IMAGE_DIR = os.path.join(ROOT_DIR, DATASETS_PATH)
+# CSV logger file path
+CSV_FILE_DIR = os.path.join(DEFAULT_LOGS_DIR, "training.csv")
 
 
 ############################################################
@@ -62,7 +78,7 @@ class ConcreteConfig(Config):
     # Train on 1 GPU and 8 images per GPU. We can put multiple images on each
     # GPU because the images are small. Batch size is 8 (GPUs * images/GPU).
     GPU_COUNT = 1
-    IMAGES_PER_GPU = 4
+    IMAGES_PER_GPU = 2
 
     # Number of classes (including background)
     # NUM_CLASSES = 1 + 2  # background + 3 shapes
@@ -72,22 +88,32 @@ class ConcreteConfig(Config):
     # the large side, and that determines the image shape.
     IMAGE_RESIZE_MODE = "square"
     IMAGE_MIN_DIM = 256
-    IMAGE_MAX_DIM = 256
+    IMAGE_MAX_DIM = 512
 
     IMAGE_MIN_SCALE = 0
 
     # Use smaller anchors because our image and objects are small
     RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)  # anchor side in pixels
 
-    # Reduce training ROIs per image because the images are small and have
+    # Reduce training ROIs per imadatasetge because the images are small and have
     # few objects. Aim to allow ROI sampling to pick 33% positive ROIs.
     TRAIN_ROIS_PER_IMAGE = 32
 
     # Use a small epoch since the data is simple
-    STEPS_PER_EPOCH = 25
+    STEPS_PER_EPOCH = 500
 
     # use small validation steps since the epoch is small
-    VALIDATION_STEPS = 5
+    VALIDATION_STEPS = 20
+
+    # Learning rate and momentum
+    # The Mask RCNN paper uses lr=0.02, but on TensorFlow it causes
+    # weights to explode. Likely due to differences in optimizer
+    # implementation.
+    LEARNING_RATE = 0.001
+    LEARNING_MOMENTUM = 0.9
+
+    # Weight decay regularization
+    WEIGHT_DECAY = 0.0001
 
 # config = ConcreteConfig()
 # config.display()
@@ -119,6 +145,35 @@ def get_ax(rows=1, cols=1, size=8):
     _, ax = plt.subplots(rows, cols, figsize=(size * cols, size * rows))
     return ax
 
+
+class CocoConfig(Config):
+    """Configuration for training on MS COCO.
+    Derives from the base Config class and overrides values specific
+    to the COCO dataset.
+    """
+    # Give the configuration a recognizable name
+    NAME = "coco"
+
+    # We use a GPU with 12GB memory, which can fit two images.
+    # Adjust down if you use a smaller GPU.
+    IMAGES_PER_GPU = 1
+
+    # Uncomment to train on 8 GPUs (default is 1)
+    GPU_COUNT = 1
+
+    # Number of classes (including background)
+    NUM_CLASSES = 1 + 80  # COCO has 80 classes
+
+    DETECTION_MIN_CONFIDENCE = 0.7
+
+    # Resize parameters
+    IMAGE_RESIZE_MODE = "square"
+    IMAGE_MIN_DIM = 800
+    IMAGE_MAX_DIM = 1024
+
+
+    IMAGE_MIN_SCALE = 0
+
 ############################################################
 #  Dataset
 ############################################################
@@ -130,7 +185,7 @@ class ConcreteDataset(utils.Dataset):
     """
 
     def load_concrete(self, dataset_dir, subset, version, return_coco=False,
-                      dataset_name="concrete"):
+                      dataset_name="concrete", force_path=None):
         """Generate the requested number of synthetic images.
         count: number of images to generate.
         height, width: the size of the generated images.
@@ -162,7 +217,10 @@ class ConcreteDataset(utils.Dataset):
             if return_coco:
                 return coco
         else:
-            dataset_path = os.path.join(dataset_dir, subset + version)
+            if force_path:
+                dataset_path = force_path
+            else:
+                dataset_path = os.path.join(dataset_dir, subset + version)
             # Get image ids from directory names
             image_ids = next(os.walk(dataset_path))[2]
 
@@ -270,17 +328,17 @@ class ConcreteDataset(utils.Dataset):
 #  Training
 ############################################################
 
-def train(model, dataset_dir, subset, version, train_mode):
+def train(model, dataset_dir, version, train_mode, epochs=[]):
     """Train the model."""
     # Training dataset. Use the training set and 35K from the
     # validation set, as as in the Mask RCNN paper.
     dataset_train = ConcreteDataset()
-    dataset_train.load_concrete(dataset_dir, subset, version)
+    dataset_train.load_concrete(dataset_dir, "train", version)
     dataset_train.prepare()
 
     # Validation dataset
     dataset_val = ConcreteDataset()
-    dataset_val.load_concrete(dataset_dir, subset, version)
+    dataset_val.load_concrete(dataset_dir, "val", version)
     dataset_val.prepare()
 
     # Image Augmentation
@@ -304,9 +362,12 @@ def train(model, dataset_dir, subset, version, train_mode):
         print("Training network heads")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=30,
+                    epochs=epochs[0],
                     layers='heads',
-                    augmentation=augmentation)
+                    augmentation=augmentation,
+                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
+                                                append=True)]
+                    )
 
     elif train_mode == "2":
         # Training - Stage 2
@@ -314,9 +375,12 @@ def train(model, dataset_dir, subset, version, train_mode):
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=90,
+                    epochs=epochs[1],
                     layers='4+',
-                    augmentation=augmentation)
+                    augmentation=augmentation,
+                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
+                                                append=True)]
+                    )
 
     elif train_mode == "3":
         # Training - Stage 3
@@ -324,11 +388,14 @@ def train(model, dataset_dir, subset, version, train_mode):
         print("Fine tune all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE / 10,
-                    epochs=120,
+                    epochs=epochs[2],
                     layers='all',
-                    augmentation=augmentation)
+                    augmentation=augmentation,
+                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
+                                                append=True)]
+                    )
     else:
-        print("'{}' is Invalid training mode".format(args.train_mode))
+        print("'{}' is Invalid training mode".format(train_mode))
 
 
 ############################################################
@@ -476,7 +543,7 @@ def mask_to_rle(image_id, mask, scores):
 #  Detection
 ############################################################
 
-def detect(model, dataset_dir, subset, version):
+def multiple_detect(model, dataset_dir, subset, version, save_image=False, save_csv=False):
     """Run detection on images in the given directory."""
     print("Running on {}".format(dataset_dir))
 
@@ -489,7 +556,7 @@ def detect(model, dataset_dir, subset, version):
 
     # Read dataset
     dataset = ConcreteDataset()
-    dataset.load_concrete(dataset_dir, subset)
+    dataset.load_concrete(dataset_dir, subset, version)
     dataset.prepare()
 
     # Load over images
@@ -509,150 +576,46 @@ def detect(model, dataset_dir, subset, version):
             dataset.class_names, r['scores'],
             show_bbox=True, show_mask=True,
             title="Predictions")
-        plt.savefig("{}/{}".format(submit_dir,
-                                   dataset.image_info[image_id]["path"].split('/')[-1]))
+        if save_image:
+            plt.savefig("{}/{}".format(submit_dir,
+                                       dataset.image_info[image_id]["path"].split('/')[-1]))
 
-    # Save to CSV file
-    submission = "ImageId, EncodedPixels\n" + "\n".join(submission)
-    file_path = os.path.join(submit_dir, "submit.csv")
-    with open(file_path, "w") as f:
-        f.write(submission)
-    print("Saved to ", submit_dir)
+    if save_csv:
+        # Save to CSV file
+        submission = "ImageId, EncodedPixels\n" + "\n".join(submission)
+        file_path = os.path.join(submit_dir, "submit.csv")
+        with open(file_path, "w") as f:
+            f.write(submission)
+        print("Saved to ", submit_dir)
+
+
+def single_detect(model, dataset, suffix, classes, subset,
+                  image_name, random_image=False, verbose=1, debug=False):
+    # spcific class name depends on datasets used
+    pic_path = os.path.join(dataset, subset + suffix)
+    files = next(os.walk(pic_path))[2]
+    if image_name:
+        random_image = False
+    if random_image:
+        while True:
+            file_name = random.choice(files)
+            if file_name.split(".")[-1] in ["png", "jpg"]:
+                break
+        print("===> Selected random image: ", file_name)
+    else:
+        file_name = image_name
+    pic = skimage.io.imread(os.path.join(pic_path, file_name))
+
+    if not debug:
+        # Run detection
+        result = model.detect([pic], verbose=verbose)
+
+        # Visualize results
+        res = result[0]
+        visualize.display_instances(pic, res['rois'], res['masks'], res['class_ids'],
+                                    classes, res['scores'])
 
 
 ############################################################
 #  Run Training
 ############################################################
-
-if __name__ == '__main__':
-    import argparse
-
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description='Train Mask R-CNN on Concrete COCO-datasets.')
-    parser.add_argument("command",
-                        metavar="<command>",
-                        help="'train' or 'evaluate' or 'detect' on Concrete COCO-datasets")
-    parser.add_argument('--weights', required=False,
-                        default="coco",
-                        metavar="/path/to/weights.h5",
-                        help="Path to weights .h5 file or 'coco'")
-    parser.add_argument('--dataset', required=False,
-                        default=DATASETS_PATH,
-                        metavar="/path/to/coco/",
-                        help='Directory of the Concrete COCO-datasets dataset')
-    parser.add_argument('--train_mode', required=False,
-                        default= "1",
-                        metavar="Training - Stage 1 ,2 or 3",
-                        help="Choose to train in different stages: \n" +
-                             "Stage 1 ==> Training network heads (default) \n" +
-                             "Stage 2 ==> Fine tune Resnet stage 4 and up \n" +
-                             "Stage 3 ==> Fine tune all layers \n")
-    parser.add_argument('--logs', required=False,
-                        default=DEFAULT_LOGS_DIR,
-                        metavar="/path/to/logs/",
-                        help='Logs and checkpoints directory (default=logs/)')
-    parser.add_argument('--limit', required=False,
-                        default= 20,
-                        metavar="<image count>",
-                        help='Images to use for evaluation (default=20)')
-    parser.add_argument('--subset', required=False,
-                        metavar="Specific dataset sub-directory to detection",
-                        help="Subset of dataset to run test")
-    parser.add_argument('--filename', required=False,
-                        metavar="Choose specific images you want to be detected ",
-                        help="Image filename provided when detect one images")
-    args = parser.parse_args()
-
-    if args.command == "detect":
-        assert args.subset, "Provide --subset or one image to run prediction on"
-        if args.subset == "images":
-            assert args.filename, "Provide --which image do you want to detect?"
-
-    print("Command: ", args.command)
-    print("Weights: ", args.weights)
-    print("Dataset: ", args.dataset)
-    if args.subset:
-        print("Subset: ", args.subset)
-    print("Logs: ", args.logs)
-    if args.command == "train":
-        assert args.train_mode in ["1", "2", "3"]
-        if args.train_mode =="1":
-            print("Train mode: Network heads")
-        elif args.train_mode =="2":
-            print("Train mode: Fine tune Resnet stage 4 and up")
-        elif args.train_mode =="3":
-            print("Train mode: Fine tune all layers")
-        else:
-            print("Invalid Train mode. Use the default mode")
-            args.train_mode = "1"
-
-
-    # Configurations
-    if args.command == "train":
-        config = ConcreteConfig()
-    else:
-        config = InferenceConfig()
-    config.display()
-    # Create model
-    if args.command == "train":
-        model = modellib.MaskRCNN(mode="training", config=config,
-                                  model_dir=args.logs)
-    else:
-        model = modellib.MaskRCNN(mode="inference", config=config,
-                                  model_dir=args.logs)
-
-    # Select weights file to load
-    if args.weights.lower() == "coco":
-        weights_path = COCO_WEIGHTS_PATH
-    elif args.weights.lower() == "last":
-        # Find last trained weights
-        weights_path = model.find_last()
-    # elif args.model.lower() == "imagenet":
-    #     # Start from ImageNet trained weights
-    #     model_path = model.get_imagenet_weights()
-    else:
-        weights_path = args.weights
-
-    # Load weights
-    print("Loading weights ", weights_path)
-    if args.weights.lower() == "coco":
-        # Exclude the last layers because they require a matching
-        # number of classes
-        model.load_weights(weights_path, by_name=True, exclude=[
-            "mrcnn_class_logits", "mrcnn_bbox_fc",
-            "mrcnn_bbox", "mrcnn_mask"])
-    else:
-        model.load_weights(weights_path, by_name=True)
-
-    # Train or evaluate or detect
-    if args.command == "train":
-        train(model, args.dataset, "train", args.train_mode)
-    elif args.command == "evaluate":
-        # Validation dataset
-        dataset_val = ConcreteDataset()
-        val_type = "val"
-        coco = dataset_val.load_concrete(args.dataset, val_type, return_coco=True)
-        dataset_val.prepare()
-        print("Running concrete evaluation on {} images.".format(args.limit))
-        evaluate_concrete(model, dataset_val, coco, "bbox", limit=int(args.limit))
-    elif args.command == "detect":
-        assert args.subset in ["test","images"]
-        if args.subset == "test":
-            detect(model, args.dataset, "test")
-        else:
-            class_names = ['BG', 'bughole']
-            file_names = next(os.walk(IMAGE_DIR))[2]
-            image = skimage.io.imread(os.path.join(IMAGE_DIR, args.filename))
-
-            # Run detection
-            results = model.detect([image], verbose=1)
-
-            # Visualize results
-            r = results[0]
-            visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
-                                        class_names, r['scores'])
-    else:
-        print("'{}' is not recognized. "
-              "Use 'train', 'evaluate' or 'detect'".format(args.command))
-

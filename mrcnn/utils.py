@@ -762,26 +762,46 @@ def compute_ap(gt_boxes, gt_class_ids, gt_masks,
 
 def compute_ap_range(gt_box, gt_class_id, gt_mask,
                      pred_box, pred_class_id, pred_score, pred_mask,
-                     iou_thresholds=None, verbose=1):
+                     iou_thresholds=None, verbose=1, curve=True):
     """Compute AP over a range or IoU thresholds. Default range is 0.5-0.95."""
     # Default is 0.5 to 0.95 with increments of 0.05
-    iou_thresholds = iou_thresholds or np.arange(0.5, 1.0, 0.05)
+    if iou_thresholds:
+        assert isinatance(iou_thresholds, float or list), \
+            "Only receive float or list!"
+    else:
+        iou_thresholds = np.arange(0.5, 1.0, 0.05)
+    if isinstance(iou_thresholds, "float"):
+        iou_thresholds = [iou_thresholds]
     
     # Compute AP over range of IoU thresholds
     AP = []
+    precision, recall = [], []
     for iou_threshold in iou_thresholds:
         ap, precisions, recalls, overlaps =\
             compute_ap(gt_box, gt_class_id, gt_mask,
                         pred_box, pred_class_id, pred_score, pred_mask,
                         iou_threshold=iou_threshold)
         if verbose:
-            print("AP @{:.2f}:\t {:.3f}".format(iou_threshold, ap))
+            print("AP @IoU={:.2f}:\t {:.3f}".format(iou_threshold, ap))
         AP.append(ap)
+        if curve:
+            precision.append(precisions)
+            recall.append(recalls)
+
     AP = np.array(AP).mean()
+    if curve:
+        precision = np.mean(np.array(precision), axis=0)
+        recall = np.mean(np.array(recall), axis=0)
+
     if verbose:
-        print("AP @{:.2f}-{:.2f}:\t {:.3f}".format(
-            iou_thresholds[0], iou_thresholds[-1], AP))
-    return AP
+        if isinatance(threshold, list):
+            print("mAP @IoU={:.2f}-{:.2f}:\t {:.3f}".format(
+                iou_thresholds[0], iou_thresholds[-1], AP))
+        else:
+            print("mAP @IoU={:.2f}:\t {:.3f}".format(
+                iou_thresholds[0], AP))
+
+    return AP, precision, recall, overlaps
 
 
 def compute_recall(pred_boxes, gt_boxes, iou):

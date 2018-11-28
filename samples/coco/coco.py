@@ -92,7 +92,7 @@ class CocoConfig(Config):
     IMAGE_MAX_DIM = 512
 
 
-IMAGE_MIN_SCALE = 0
+    IMAGE_MIN_SCALE = 0
 
 ############################################################
 #  Dataset

@@ -1,5 +1,6 @@
 
 import os
+# from concrete_mrcnn.concrete import DEFAULT_LOGS_DIR
 # import numpy as np
 # import tensorflow
 # from mrcnn.utils import norm_boxes
@@ -7,5 +8,5 @@ import os
 # boxes = norm_boxes(np.array([[10, 10, 30, 50], [20, 20, 100, 100]]), (256, 256))
 # print(boxes)
 
-ROOT_DIR = os.path.abspath("../")
-print(ROOT_DIR)
+# ROOT_DIR = os.path.abspath("../")
+# print(ROOT_DIR)
