@@ -5,6 +5,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # import json
 import sys
 import random
+import warnings
+warnings.filterwarnings('ignore')
 # import math
 # import re
 import time
@@ -35,7 +37,7 @@ from pycocotools import mask as maskUtils
 
 import tensorflow as tf
 import keras.backend.tensorflow_backend as KTF
-from keras.callbacks import CSVLogger
+from keras.callbacks import CSVLogger, Callback
 
 config = tf.ConfigProto(allow_soft_placement=True,
                         log_device_placement=False)
@@ -81,8 +83,8 @@ class ConcreteConfig(Config):
     IMAGES_PER_GPU = 2
 
     # Number of classes (including background)
-    # NUM_CLASSES = 1 + 2  # background + 3 shapes
-    NUM_CLASSES = 1 + 1  # background + 3 shapes
+    NUM_CLASSES = 1 + 2  # background + 3 shapes
+    # NUM_CLASSES = 1 + 1  # background + 3 shapes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
@@ -100,10 +102,10 @@ class ConcreteConfig(Config):
     TRAIN_ROIS_PER_IMAGE = 32
 
     # Use a small epoch since the data is simple
-    STEPS_PER_EPOCH = 500
+    STEPS_PER_EPOCH = 50
 
     # use small validation steps since the epoch is small
-    VALIDATION_STEPS = 20
+    VALIDATION_STEPS = 5
 
     # Learning rate and momentum
     # The Mask RCNN paper uses lr=0.02, but on TensorFlow it causes
@@ -328,7 +330,7 @@ class ConcreteDataset(utils.Dataset):
 #  Training
 ############################################################
 
-def train(model, dataset_dir, version, train_mode, epochs=[]):
+def train(model, config, dataset_dir, version, train_mode, epochs):
     """Train the model."""
     # Training dataset. Use the training set and 35K from the
     # validation set, as as in the Mask RCNN paper.
@@ -362,11 +364,12 @@ def train(model, dataset_dir, version, train_mode, epochs=[]):
         print("Training network heads")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=epochs[0],
+                    epochs=epochs,
                     layers='heads',
                     augmentation=augmentation,
-                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
-                                                append=True)]
+                    custom_callbacks=[CSVLogger(
+                        os.path.join(model.log_dir, "training.csv"),
+                        append=True)]
                     )
 
     elif train_mode == "2":
@@ -375,11 +378,12 @@ def train(model, dataset_dir, version, train_mode, epochs=[]):
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=epochs[1],
+                    epochs=epochs,
                     layers='4+',
                     augmentation=augmentation,
-                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
-                                                append=True)]
+                    custom_callbacks=[CSVLogger(
+                        os.path.join(model.log_dir, "training.csv"),
+                        append=True)]
                     )
 
     elif train_mode == "3":
@@ -388,11 +392,12 @@ def train(model, dataset_dir, version, train_mode, epochs=[]):
         print("Fine tune all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE / 10,
-                    epochs=epochs[2],
+                    epochs=epochs,
                     layers='all',
                     augmentation=augmentation,
-                    custom_callbacks=[CSVLogger(CSV_FILE_DIR,
-                                                append=True)]
+                    custom_callbacks=[CSVLogger(
+                        os.path.join(model.log_dir, "training.csv"),
+                        append=True)]
                     )
     else:
         print("'{}' is Invalid training mode".format(train_mode))
@@ -617,5 +622,42 @@ def single_detect(model, dataset, suffix, classes, subset,
 
 
 ############################################################
-#  Run Training
+#  Custom Callbacks
 ############################################################
+
+class LossHistory(Callback):
+    def on_train_begin(self, logs={}):
+        self.losses = {'batch':[], 'epoch':[]}
+        self.accuracy = {'batch':[], 'epoch':[]}
+        self.val_loss = {'batch':[], 'epoch':[]}
+        self.val_acc = {'batch':[], 'epoch':[]}
+
+    def on_batch_end(self, batch, logs={}):
+        self.losses['batch'].append(logs.get('loss'))
+        self.accuracy['batch'].append(logs.get('acc'))
+        self.val_loss['batch'].append(logs.get('val_loss'))
+        self.val_acc['batch'].append(logs.get('val_acc'))
+
+    def on_epoch_end(self, batch, logs={}):
+        self.losses['epoch'].append(logs.get('loss'))
+        self.accuracy['epoch'].append(logs.get('acc'))
+        self.val_loss['epoch'].append(logs.get('val_loss'))
+        self.val_acc['epoch'].append(logs.get('val_acc'))
+
+    def loss_plot(self, loss_type):
+        iters = range(len(self.losses[loss_type]))
+        plt.figure()
+        # acc
+        plt.plot(iters, self.accuracy[loss_type], 'r', label='train acc')
+        # loss
+        plt.plot(iters, self.losses[loss_type], 'g', label='train loss')
+        if loss_type == 'epoch':
+            # val_acc
+            plt.plot(iters, self.val_acc[loss_type], 'b', label='val acc')
+            # val_loss
+            plt.plot(iters, self.val_loss[loss_type], 'k', label='val loss')
+        plt.grid(True)
+        plt.xlabel(loss_type)
+        plt.ylabel('acc-loss')
+        plt.legend(loc="upper right")
+        plt.show()

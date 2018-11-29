@@ -2081,23 +2081,34 @@ class MaskRCNN():
         dir_names = next(os.walk(self.model_dir))[1]
         key = self.config.NAME.lower()
         dir_names = filter(lambda f: f.startswith(key), dir_names)
-        dir_names = sorted(dir_names)
+        dir_names = sorted(dir_names, reverse=True)
         if not dir_names:
             import errno
             raise FileNotFoundError(
                 errno.ENOENT,
                 "Could not find model directory under {}".format(self.model_dir))
-        # Pick last directory
-        dir_name = os.path.join(self.model_dir, dir_names[-1])
-        # Find the last checkpoint
-        checkpoints = next(os.walk(dir_name))[2]
-        checkpoints = filter(lambda f: f.startswith("mask_rcnn"), checkpoints)
-        checkpoints = sorted(checkpoints)
-        if not checkpoints:
-            import errno
-            raise FileNotFoundError(
-                errno.ENOENT, "Could not find weight files in {}".format(dir_name))
-        checkpoint = os.path.join(dir_name, checkpoints[-1])
+        # Pick last Non-empty directory
+        for i in range(len(dir_names)):
+            dir_name = os.path.join(self.model_dir, dir_names[i])
+            if not os.listdir(dir_name):
+                os.rmdir(dir_name)
+                continue
+            else:
+                # Find the last checkpoint
+                checkpoints = next(os.walk(dir_name))[2]
+                checkpoints = filter(lambda f: f.startswith("mask_rcnn_{}".format(key)),
+                                     checkpoints)
+                checkpoints = sorted(checkpoints)
+                if not checkpoints:
+                    if i == len(dir_names) - 1:
+                        import errno
+                        raise FileNotFoundError(
+                            errno.ENOENT, "Could not find the last weight files in {}".format(self.model_dir))
+                    continue
+                else:
+                    checkpoint = os.path.join(dir_name, checkpoints[-1])
+                    break
+
         return checkpoint
 
     def load_weights(self, filepath, by_name=False, exclude=None):
@@ -2252,6 +2263,9 @@ class MaskRCNN():
             name.
         """
         # Set date and epoch counter as if starting a new model
+        if True:
+            from concrete_mrcnn.concrete_tools import logs_clean
+            logs_clean(self.model_dir)
         self.epoch = 0
         now = datetime.datetime.now()
 
@@ -2366,8 +2380,9 @@ class MaskRCNN():
         if os.name is 'nt':
             workers = 0
         else:
-            workers = multiprocessing.cpu_count()
+            workers = int(multiprocessing.cpu_count() / 2)
 
+        # print(self.epoch, epochs)
         self.keras_model.fit_generator(
             train_generator,
             initial_epoch=self.epoch,

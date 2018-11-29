@@ -47,7 +47,8 @@ def train_strategy(command, weights, dataset, version, stage, logs,
         concrete_config.display()
 
     # Create model
-    with tf.device("/gpu:0"):
+    # if True:
+    with tf.device("/gpu:1"):
         if command == "train":
             concrete_model = modellib.MaskRCNN(mode="training",
                                                config=concrete_config,
@@ -58,11 +59,12 @@ def train_strategy(command, weights, dataset, version, stage, logs,
                                                model_dir=logs)
 
     # Select weights file to load
-    if weights.lower() == "coco" or "debug":
+    if weights.lower() == "coco":
         weights_dir = COCO_WEIGHTS_PATH
     elif weights.lower() == "last":
         # Find last trained weights
         weights_dir = concrete_model.find_last()
+        # print("last weight:", concrete_model.find_last())
     elif weights.lower() == "imagenet":
         # Start from ImageNet trained weights
         weights_dir = concrete_model.get_imagenet_weights()
@@ -88,9 +90,9 @@ def train_strategy(command, weights, dataset, version, stage, logs,
 
     # Train or evaluate or detect
     if command == "train":
-        assert isinstance(train_epochs, list), "Epochs list [stage 1, 2, 3]"
-        train(concrete_model, dataset, suffix, stage, train_epochs)
-        print("========training...")
+        assert isinstance(train_epochs, int), "Epochs must be provided!"
+        train(concrete_model, concrete_config, dataset, suffix, stage, train_epochs)
+        print("\n========training...")
     elif command == "val":
         if dir_suffix:
             print("Version will be ignored!")
@@ -106,12 +108,12 @@ def train_strategy(command, weights, dataset, version, stage, logs,
         print("Running concrete evaluation on {} images.".format(limit))
         evaluate_concrete(concrete_model, val_dataset, coco_data,
                           validate_type, limit=int(limit))
-        print("=======val...")
+        print("\n=======val...")
     elif command == "detect":
         if detect_target == "subset":
             print("Detect images on test" + suffix + "....")
             multiple_detect(concrete_model, dataset, "test", suffix, save, csv)
-            print("=======subset done!...")
+            print("\n=======subset done!...")
         else:
             if concrete_config.NAME == "concrete":
                 classes_name = ['BG', 'bughole']
@@ -120,12 +122,12 @@ def train_strategy(command, weights, dataset, version, stage, logs,
                 classes_name = cd.class_names
             single_detect(concrete_model, dataset, suffix, classes_name, val_subset,
                           image_name, random_image, verbose=1)
-            print("=======images done!...")
+            print("\n=======images done!...")
     else:
         print("'{}' is not recognized. "
               "Use 'train', 'val' or 'detect'".format(command))
 
-    logs_clean(logs)
+    # logs_clean(logs)
 
 
 def precision_recall(config, mode, subset, version, weights, logs, gpu=None,
@@ -242,7 +244,7 @@ def precision_recall(config, mode, subset, version, weights, logs, gpu=None,
         #Plot results
         visualize.plot_precision_recall(aps, precisions, recalls, threshold)
 
-    logs_clean(logs)
+    # logs_clean(logs)
 
 # Compute VOC-style Average Precision
 def compute_batch_ap(model, dataset, config, image_ids, threshold,
@@ -358,13 +360,13 @@ def display_differences(config, dirname, config_display=True, device = "/gpu:0")
     #                             show_bbox=False, show_mask=False,
     #                             title="Ground Truth")
 
-    logs_clean(logs)
+    # logs_clean(logs)
 
 
 def logs_clean(path):
     files = os.listdir(path)
     # root = os.path.abspath(path)
-    print('\n...To clean logs in', path)
+    # print('\n...To clean logs in', path)
     for f in files:
         # print(f)
         f_path = os.path.join(path, f)
@@ -373,41 +375,49 @@ def logs_clean(path):
             if not os.listdir(f_path):
                 # print("del dir")
                 os.rmdir(f_path)
+                # print('==> Empty logs dir clean done in {}\n'.format(path))
         elif os.path.isfile(f_path):
             if os.path.getsize(f_path) == 0:
                 # print("del file")
                 os.remove(f_path)
-    print('==> Empty logs dir clean done in', path)
+                # print('==> Empty files clean done in {}\n'.format(path))
 
 
-def concrete_train_schedule(epochs):
-    # Stage 1
-    train_strategy(command="train", weights="coco", config_display=True,
-                   dataset=DATASETS_PATH, version='111', logs=DEFAULT_LOGS_DIR,
-                   stage="1", train_epochs=epochs,    # train
-                   dir_suffix=None,   # specific target directory
-                   limit=None, validate_type=None,    # val
-                   save=False, csv=False, val_subset=None,   # detect multiple images and save
-                   detect_target=None, classes_name=None, # detect single image
-                   image_name=None, random_image=False)    # or random image
-    # Stage 2
-    train_strategy(command="train", weights="last", config_display=False,
-                   dataset=DATASETS_PATH, version='111', logs=DEFAULT_LOGS_DIR,
-                   stage="2", train_epochs=epochs,  # train
-                   dir_suffix=None,  # specific target directory
-                   limit=None, validate_type=None,  # val
-                   save=False, csv=False, val_subset=None,  # detect multiple images and save
-                   detect_target=None, classes_name=None,  # detect single image
-                   image_name=None, random_image=False)  # or random image
-    # Stage 3
-    train_strategy(command="train", weights="last", config_display=False,
-                   dataset=DATASETS_PATH, version='111', logs=DEFAULT_LOGS_DIR,
-                   stage="3", train_epochs=epochs,  # train
-                   dir_suffix=None,  # specific target directory
-                   limit=None, validate_type=None,  # val
-                   save=False, csv=False, val_subset=None,  # detect multiple images and save
-                   detect_target=None, classes_name=None,  # detect single image
-                   image_name=None, random_image=False)  # or random image
+def concrete_train_schedule(epochs, version, stage=[1, 1, 1]):
+    # logs_clean(DEFAULT_LOGS_DIR)
+    if stage[0]:
+        print("\n=== Stage 1 ===>")
+        # Stage 1
+        train_strategy(command="train", weights="coco", config_display=True,
+                       dataset=DATASETS_PATH, version=version, logs=DEFAULT_LOGS_DIR,
+                       stage="1", train_epochs=epochs[0],    # train
+                       dir_suffix=None,   # specific target directory
+                       limit=None, validate_type=None,    # val
+                       save=False, csv=False, val_subset=None,   # detect multiple images and save
+                       detect_target=None, classes_name=None, # detect single image
+                       image_name=None, random_image=False)    # or random image
+    if stage[1]:
+        print("\n=== Stage 2 ===>")
+        # Stage 2
+        train_strategy(command="train", weights="last", config_display=False,
+                       dataset=DATASETS_PATH, version=version, logs=DEFAULT_LOGS_DIR,
+                       stage="2", train_epochs=epochs[1],  # train
+                       dir_suffix=None,  # specific target directory
+                       limit=None, validate_type=None,  # val
+                       save=False, csv=False, val_subset=None,  # detect multiple images and save
+                       detect_target=None, classes_name=None,  # detect single image
+                       image_name=None, random_image=False)  # or random image
+    if stage[2]:
+        print("\n=== Stage 3 ===>")
+        # Stage 3
+        train_strategy(command="train", weights="last", config_display=False,
+                       dataset=DATASETS_PATH, version=version, logs=DEFAULT_LOGS_DIR,
+                       stage="3", train_epochs=epochs[2],  # train
+                       dir_suffix=None,  # specific target directory
+                       limit=None, validate_type=None,  # val
+                       save=False, csv=False, val_subset=None,  # detect multiple images and save
+                       detect_target=None, classes_name=None,  # detect single image
+                       image_name=None, random_image=False)  # or random image
 
 
 
