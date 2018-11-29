@@ -129,7 +129,7 @@ class InferenceConfig(ConcreteConfig):
     DETECTION_MIN_CONFIDENCE = 0.7
 
     # Don't resize imager for inferencing
-    IMAGE_RESIZE_MODE = "pad64"
+    IMAGE_RESIZE_MODE = "square"
 
     # Non-max suppression threshold to filter RPN proposals.
     # You can increase this during training to generate more propsals.

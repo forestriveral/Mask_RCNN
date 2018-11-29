@@ -18,15 +18,18 @@ model = modellib.MaskRCNN(mode="inference",
                           model_dir=DEFAULT_LOGS_DIR,
                           config=config)
 
-image_path = "test000/images/20.jpg"
 weight_path = "concrete20181128T2034/mask_rcnn_concrete_0022.h5"
-
 model.load_weights(os.path.join(DEFAULT_LOGS_DIR, weight_path), by_name=True)
 class_names = ['BG', "crack", "bughole"]
 
-image = skimage.io.imread(os.path.join(DATASETS_PATH, image_path))
-results = model.detect([image], verbose=1)
-r = results[0]
-visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
-                            class_names, r['scores'], figsize=(10, 10))
+image_path = os.path.join(DATASETS_PATH, "test000/images")
+images = next(os.walk(image_path))[2]
+
+for image in images:
+    image = os.path.join(image_path, image)
+    image = skimage.io.imread(image)
+    results = model.detect([image], verbose=1)
+    r = results[0]
+    visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
+                                class_names, r['scores'], figsize=(10, 10))
 
