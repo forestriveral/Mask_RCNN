@@ -92,7 +92,9 @@ def train_strategy(command, weights, dataset, version, stage, logs,
     if command == "train":
         assert isinstance(train_epochs, int), "Epochs must be provided!"
         train(concrete_model, concrete_config, dataset, suffix, stage, train_epochs)
-        print("\n========training...")
+        # train(concrete_model, concrete_config, dataset, suffix, 2, train_epochs[1])
+        # train(concrete_model, concrete_config, dataset, suffix, 3, train_epochs[2])
+        # print("\n========training...")
     elif command == "val":
         if dir_suffix:
             print("Version will be ignored!")
@@ -198,7 +200,7 @@ def precision_recall(config, mode, subset, version, weights, logs, gpu=None,
         r = results[0]
 
         if image_display:
-            visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
+            visualization.display_instances(image, r['rois'], r['masks'], r['class_ids'],
                                         dataset.class_names, r['scores'], ax=ax,
                                         title="Predictions")
 

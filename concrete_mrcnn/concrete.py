@@ -83,8 +83,8 @@ class ConcreteConfig(Config):
     IMAGES_PER_GPU = 2
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 2  # background + 3 shapes
-    # NUM_CLASSES = 1 + 1  # background + 3 shapes
+    # NUM_CLASSES = 1 + 2  # background + 3 shapes
+    NUM_CLASSES = 1 + 1  # background + 3 shapes
 
     # Use small images for faster training. Set the limits of the small side
     # the large side, and that determines the image shape.
@@ -126,10 +126,14 @@ class InferenceConfig(ConcreteConfig):
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
 
-    DETECTION_MIN_CONFIDENCE = 0.7
+    DETECTION_MIN_CONFIDENCE = 0.0
 
     # Don't resize imager for inferencing
     IMAGE_RESIZE_MODE = "square"
+    IMAGE_MIN_DIM = 512
+    IMAGE_MAX_DIM = 1024
+
+    IMAGE_MIN_SCALE = 0
 
     # Non-max suppression threshold to filter RPN proposals.
     # You can increase this during training to generate more propsals.
