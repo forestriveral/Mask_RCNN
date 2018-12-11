@@ -804,7 +804,7 @@ def compute_ap_range(gt_box, gt_class_id, gt_mask,
     return AP, precision, recall, overlaps
 
 
-def compute_recall(pred_boxes, gt_boxes, iou):
+def compute_recall_precision_bbox(pred_boxes, gt_boxes, iou, ):
     """Compute the recall at the given IoU threshold. It's an indication
     of how many GT boxes were found by the given prediction boxes.
 
@@ -819,7 +819,8 @@ def compute_recall(pred_boxes, gt_boxes, iou):
     matched_gt_boxes = iou_argmax[positive_ids]
 
     recall = len(set(matched_gt_boxes)) / gt_boxes.shape[0]
-    return recall, positive_ids
+    precision = len(set(matched_gt_boxes)) / pred_boxes.shape[0]
+    return recall, precision, positive_ids
 
 
 # ## Batch Slicing
