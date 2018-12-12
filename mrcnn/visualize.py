@@ -310,14 +310,16 @@ def plot_precision_recall(AP, precisions, recalls, threshold=None):
     precisions: list of precision values
     recalls: list of recall values
     """
-    threshold = threshold or 0.5
+    if isinstance(threshold, (float, list, np.ndarray)):
+        pass
+    else:
+        threshold = 0.5
     # Plot the Precision-Recall curve
     _, ax = plt.subplots(1)
-    if isinstance(threshold, "float"):
+    if isinstance(threshold, float):
         ax.set_title("Precision-Recall Curve. AP@{:.2f} = {:.3f}".format(threshold, AP))
     else:
-        ax.set_title("Precision-Recall Curve. AP@{:.2f}-{:.2f} = {:.3f}".format(threshold[0],
-                                                                                threshold[1], AP))
+        ax.set_title("Precision-Recall Curve. AP@0.50-0.95 = {:.3f}".format(AP))
     ax.set_ylim(0, 1.1)
     ax.set_xlim(0, 1.1)
     _ = ax.plot(recalls, precisions)

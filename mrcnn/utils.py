@@ -82,6 +82,8 @@ def compute_overlaps(boxes1, boxes2):
 
     For better performance, pass the largest set first and the smaller second.
     """
+    if not list(boxes1):
+        return np.zeros((boxes1.shape[0], boxes2.shape[-1]))
     # Areas of anchors and GT boxes
     area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
     area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
@@ -99,11 +101,15 @@ def compute_overlaps_masks(masks1, masks2):
     """Computes IoU overlaps between two sets of masks.
     masks1, masks2: [Height, Width, instances]
     """
-    
     # If either set of masks is empty return empty result
     if masks1.shape[0] == 0 or masks2.shape[0] == 0:
         return np.zeros((masks1.shape[0], masks2.shape[-1]))
     # flatten masks and compute their areas
+    if np.sum((masks2 > .5).astype(np.uint8)) == 0:
+        return np.zeros((masks1.shape[0], masks2.shape[-1]))
+    if np.sum((masks1 > .5).astype(np.uint8)) == 0:
+        return np.zeros((masks1.shape[0], masks2.shape[-1]))
+
     masks1 = np.reshape(masks1 > .5, (-1, masks1.shape[-1])).astype(np.float32)
     masks2 = np.reshape(masks2 > .5, (-1, masks2.shape[-1])).astype(np.float32)
     area1 = np.sum(masks1, axis=0)
@@ -689,6 +695,10 @@ def compute_matches(gt_boxes, gt_class_ids, gt_masks,
 
     # Compute IoU overlaps [pred_masks, gt_masks]
     overlaps = compute_overlaps_masks(pred_masks, gt_masks)
+    if not list(overlaps):
+        return np.zeros([gt_boxes.shape[0]]), \
+               np.zeros([pred_boxes.shape[0]]),\
+               overlaps
 
     # Loop through predictions and find matching ground truth boxes
     match_count = 0
@@ -765,13 +775,12 @@ def compute_ap_range(gt_box, gt_class_id, gt_mask,
                      iou_thresholds=None, verbose=1, curve=True):
     """Compute AP over a range or IoU thresholds. Default range is 0.5-0.95."""
     # Default is 0.5 to 0.95 with increments of 0.05
-    if iou_thresholds:
-        assert isinatance(iou_thresholds, float or list), \
-            "Only receive float or list!"
+    if isinstance(iou_thresholds, (list, np.ndarray)):
+        pass
+    elif isinstance(iou_thresholds, float):
+        iou_thresholds = np.array([iou_thresholds])
     else:
         iou_thresholds = np.arange(0.5, 1.0, 0.05)
-    if isinstance(iou_thresholds, "float"):
-        iou_thresholds = [iou_thresholds]
     
     # Compute AP over range of IoU thresholds
     AP = []
@@ -782,7 +791,7 @@ def compute_ap_range(gt_box, gt_class_id, gt_mask,
                         pred_box, pred_class_id, pred_score, pred_mask,
                         iou_threshold=iou_threshold)
         if verbose:
-            print("AP @IoU={:.2f}:\t {:.3f}".format(iou_threshold, ap))
+            print("AP @IoU={:.2f}: {:.3f}".format(iou_threshold, ap))
         AP.append(ap)
         if curve:
             precision.append(precisions)
@@ -790,15 +799,17 @@ def compute_ap_range(gt_box, gt_class_id, gt_mask,
 
     AP = np.array(AP).mean()
     if curve:
+        print("Precision: ", np.round(np.array(precision), decimals=2))
+        print("Recall: ", np.round(np.array(recall), decimals=2))
         precision = np.mean(np.array(precision), axis=0)
         recall = np.mean(np.array(recall), axis=0)
 
     if verbose:
-        if isinatance(threshold, list):
-            print("mAP @IoU={:.2f}-{:.2f}:\t {:.3f}".format(
+        if isinstance(iou_thresholds, (list, np.ndarray)):
+            print("mAP @IoU={:.2f}-{:.2f}: {:.3f}".format(
                 iou_thresholds[0], iou_thresholds[-1], AP))
         else:
-            print("mAP @IoU={:.2f}:\t {:.3f}".format(
+            print("mAP @IoU={:.2f}: {:.3f}".format(
                 iou_thresholds[0], AP))
 
     return AP, precision, recall, overlaps

@@ -41,13 +41,17 @@ def log(text, array=None):
     prints it's shape, min, and max values.
     """
     if array is not None:
-        text = text.ljust(25)
-        text += ("shape: {:20}  min: {:10.5f}  max: {:10.5f}  {}".format(
-            str(array.shape),
-            array.min() if array.size else "",
-            array.max() if array.size else "",
-            array.dtype))
-    print(text)
+        try:
+            text = text.ljust(25)
+            text += ("shape: {:20}  min: {:10.5f}  max: {:10.5f}  {}".format(
+                str(array.shape),
+                array.min() if array.size else "",
+                array.max() if array.size else "",
+                array.dtype if isinstance(array, np.ndarray) else type(array)))
+        except:
+            text = "*** No predicted instances***"
+        print(text)
+
 
 
 class BatchNorm(KL.BatchNormalization):

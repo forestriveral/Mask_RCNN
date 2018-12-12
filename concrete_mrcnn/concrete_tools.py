@@ -1,5 +1,6 @@
 
 import glob
+from scipy import interpolate
 from concrete_mrcnn.concrete import *
 from samples.coco import coco
 
@@ -253,6 +254,8 @@ def compute_batch_ap(model, dataset, config, image_ids, threshold,
                      verbose=0, curve=True):
     aps = []
     precision, recall = [], []
+    wrong_count = 0
+    print("Ready to evaluate on {} images ...".format(len(image_ids)))
     for image_id in image_ids:
         # Load image
         image, image_meta, gt_class_id, gt_bbox, gt_mask =\
@@ -263,37 +266,61 @@ def compute_batch_ap(model, dataset, config, image_ids, threshold,
         # Compute AP
         r = results[0]
 
-        ap, precisions, recalls, overlaps =\
-            utils.compute_ap_range(gt_bbox, gt_class_id, gt_mask,
-                                   r['rois'], r['class_ids'], r['scores'], r['masks'],
-                                   iou_thresholds=threshold, verbose=0, curve=curve)
+        try:
+            ap, precisions, recalls, overlaps =\
+                utils.compute_ap_range(gt_bbox, gt_class_id, gt_mask,
+                                       r['rois'], r['class_ids'], r['scores'], r['masks'],
+                                       iou_thresholds=threshold, verbose=0, curve=curve)
+        except:
+            wrong_count += 1
+            print("No.{} Wrong image:{}({})".format(wrong_count,
+                                                dataset.image_info[image_id]["id"],
+                                                image_id))
+            continue
         aps.append(ap)
         if curve:
             precision.append(precisions)
             recall.append(recalls)
 
         if verbose:
-            if isinatance(threshold, float):
+            if isinstance(threshold, float):
                 print("{} ==> mAP @IoU={:.2f}: ".format(
                     dataset.image_info[image_id]['path'].split('/')[-1], threshold), ap)
             else:
                 print("{} ==> mAP @IoU={:.2f}~{:.2f}: ".format(
                     dataset.image_info[image_id]['path'].split('/')[-1],
-                    threshold[0], threshold[-1]), ap)
+                    float(threshold[0]), float(threshold[-1]), ap))
+    if wrong_count:
+        print("Total number of wrong images:{}\n".format(wrong_count))
 
     aps = np.array(aps).mean()
     if curve:
-        precision = np.mean(np.array(precision), axis=0)
-        recall = np.mean(np.array(recall), axis=0)
+        recall, precision = format_interpolate(recall, precision)
 
-    if isinatance(threshold, float):
-        print("mAP @IoU={:.2f}-{:.2f}:\t {:.3f}".format(threshold[0],
-                                                        threshold[-1], np.mean(aps)))
+    if not isinstance(threshold, float):
+        print("mAP @IoU={:.2f}-{:.2f}:\t {:.3f}".format(float(threshold[0]),
+                                                        float(threshold[-1]), np.mean(aps)))
     else:
         print("mAP @IoU={:.2f}: ".format(threshold), np.mean(aps))
 
     return aps, precision, recall, overlaps
 
+
+def format_interpolate(r, p):
+    assert isinstance(r, list), "Recalls must be list type!"
+    r = np.array(r)
+    p = np.array(p)
+    num = max([r[i].shape[0] for i in range(r.shape[0])])
+    r_new = np.linspace(0., 1., num)
+    p_news = np.zeros([len(r), num])
+    for i in range(len(r)):
+        f = interpolate.interp1d(r[i], p[i], kind='slinear')
+        p_new = f(r_new)
+        p_news[i, :] = p_new
+    assert p_news.shape == (len(r), num)
+    p_new = np.mean(p_news, axis=0)
+
+    return r_new, p_new
 
 def display_differences(config, dirname, config_display=True, device = "/gpu:0"):
     if config == "coco":

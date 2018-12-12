@@ -359,6 +359,10 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
     if limit:
         image_ids = image_ids[:limit]
 
+    assert isinstance(image_ids, (list, int)), "Images list or selected image!"
+    if isinstance(image_ids, int):
+        print("Evaluate on Image ID {}".format(image_ids))
+        image_ids = [image_ids]
     # Get corresponding COCO image IDs.
     coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
 
@@ -393,9 +397,9 @@ def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=Non
     cocoEval.accumulate()
     cocoEval.summarize()
 
-    print("Prediction time: {}. Average {}/image".format(
+    print("Prediction time: {:.2f}(s). Average {:.2f}(s)/image".format(
         t_prediction, t_prediction / len(image_ids)))
-    print("Total time: ", time.time() - t_start)
+    print("Total time: {:.2f}(s)".format(time.time() - t_start))
 
 
 ############################################################
