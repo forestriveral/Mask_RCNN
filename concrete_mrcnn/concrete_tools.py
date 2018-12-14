@@ -449,7 +449,48 @@ def concrete_train_schedule(epochs, version, stage=[1, 1, 1]):
                        image_name=None, random_image=False)  # or random image
 
 
+class Trainer:
+    def __init__(self, model, dataset_train, dataset_val, config, augmentation):
+        self.model = model
+        self.dataset_train = dataset_train
+        self.dataset_val = dataset_val
+        self.config = config
+        self.augmentation = augmentation
+        self.total_epochs = 0
 
+    def train(self, message, num_epochs, layers, learning_rate_factor=1.0):
+        self.total_epochs += num_epochs
+        print(message + f' for {num_epochs} mini-epochs.')
+        self.model.train(self.dataset_train, self.dataset_val,
+                         learning_rate=self.config.LEARNING_RATE * learning_rate_factor,
+                         epochs=self.total_epochs,
+                         layers=layers,
+                         augmentation=self.augmentation)
+
+
+def training_steps():
+    trainer = Trainer(model, dataset_train, dataset_val, config, augmentation)
+
+    trainer.train('Training Stage 1: only network heads',
+                  num_epochs=1, layers='heads')
+
+    trainer.train('Training Stage 2: warmup for network except resnet-50',
+                  num_epochs=1, layers='4+', learning_rate_factor=0.01)
+
+    trainer.train('Training Stage 3: train network except resnet-50',
+                  num_epochs=5, layers='4+')
+
+    trainer.train('Training Stage 4: warmup for everything',
+                  num_epochs=1, layers='all', learning_rate_factor=0.01)
+
+    trainer.train('Training Stage 5: train everything',
+                  num_epochs=100, layers='all')
+
+    trainer.train('Training Stage 6: fine-tune / 10',
+                  num_epochs=20, layers='all', learning_rate_factor=0.1)
+
+    trainer.train('Training Stage 7: fine-tune / 100',
+                  num_epochs=10, layers='all', learning_rate_factor=0.01)
 
 
 

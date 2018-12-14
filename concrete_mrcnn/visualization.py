@@ -18,7 +18,8 @@ ROOT_DIR = os.path.abspath("../")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
-from mrcnn import utils
+from mrcnn import model as modellib, utils
+from concrete_mrcnn.concrete_tools import build_concrete_results
 
 
 def display_instances(image, boxes, masks, class_ids, class_names,
@@ -191,6 +192,191 @@ def contour_compute(contour, image_area, scale=None):
     max_diameter = np.sqrt(4 * mask_area / np.pi)
     area_rate = mask_area / image_area * scale
     return mask_area, area_rate, max_diameter
+
+
+def voc_ap_compute(model, config, dataset, image_ids, class_name=None,
+                     threshold=0.5, type="mask", ):
+    # Pick COCO images from the dataset
+    image_ids = image_ids or dataset.image_ids
+
+    # Limit to a subset
+    if limit:
+        image_ids = image_ids[:limit]
+
+    assert isinstance(image_ids, (list, int)),\
+        "Images list or selected image!"
+    if isinstance(image_ids, int):
+        print("Evaluate on Image ID {}".format(image_ids))
+        image_ids = [image_ids]
+    # Get corresponding COCO image IDs.
+    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
+
+    if class_name is not None:
+        # class_id = [c["id"] for c in dataset.class_info if c["name"] in class_name]
+        class_id = [dataset.class_names.index(c) for c in class_name]
+        assert len(class_id) == len(class_name), "No repeat class name!"
+    else:
+        class_id = dataset.class_ids.remove(0)
+
+    # Initiate the format to store gt or detection results
+    results = [{"image_ids":[],
+                "confidence": [],
+                "region": []} for i in range(len(class_id))]
+    results_num = [0 for i in range(len(class_id))]
+
+    gt = [{} for i in range(len(class_id))]
+    gt_num = [0 for i in range(len(class_id))]
+    for i, image_id in enumerate(image_ids):
+        # Load annotations gt infomation
+        gt, gt_num = build_voc_gts(dataset, config, image_id, class_id,
+                    type, gt, gt_num)
+        # Load image
+        image = dataset.load_image(image_id)
+        # Run detection
+        r = model.detect([image], verbose=0)[0]
+        # Build the voc results
+        results, results_num= build_voc_results(r, results, class_id,
+                                                image_id, type, results_num)
+
+    # Loop for every class need to compute ap
+    precisions = {}
+    recalls = {}
+    maps = {}
+    for i, cls in enumerate(class_id):
+        if class_name is None:
+            class_name = dataset.class_names[1:]
+        precisions[class_name[i]] = []
+        recalls[class_name[i]] = []
+        maps[class_name[i]] = []
+
+        # sort by confidence
+        sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
+        region = np.array(results[i]["region"])[sorted_ind, :] if type == "bbox" else \
+            np.array(results[i]["region"])[:, :, sorted_ind]
+        image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
+
+        # go down dets and mark TPs and FPs
+        nd = len(image_ids)
+        tp = np.zeros(nd)
+        fp = np.zeros(nd)
+        for d in range(nd):
+            R = gt[i][image_ids[d]]
+            bb = region[d, :].astype(float) if type == "bbox" else region[:, :, d]
+            ovmax = -np.inf
+            BBGT = R['region'].astype(float)
+
+            if BBGT.size > 0:
+                # compute overlaps
+                overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if type == "mask" else \
+                    utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
+                assert overlaps.shape == (BBGT.shape[0], 1)
+                ovmax = np.max(overlaps)
+                jmax = np.argmax(overlaps)
+
+            if isinstance(threshold, (list, np.ndarray)):
+                pass
+            else:
+                assert isinstance(threshold, (float, int))
+                if ovmax > threshold:
+                    if not R['det'][jmax]:
+                        tp[d] = 1.
+                        R['det'][jmax] = 1
+                    else:
+                        fp[d] = 1.
+                else:
+                    fp[d] = 1.
+
+            # compute precision recall
+            fp = np.cumsum(fp)
+            tp = np.cumsum(tp)
+            recall = tp / float(gt_num)
+            # avoid divide by zero in case the first detection matches a difficult
+            # ground truth
+            precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+            map, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+
+            precisions[class_name[i]].append(list(prec))
+            recalls[class_name[i]].append(list(rec))
+            maps[class_name[i]].append(float(map))
+
+    return recalls, precisions, maps
+
+
+def voc_ap(rec, prec, use_07_metric=False):
+    """Compute VOC AP given precision and recall. If use_07_metric is true, uses
+    the VOC 07 11-point method (default:False).
+    """
+    if use_07_metric:
+        # 11 point metric
+        ap = 0.
+        for t in np.arange(0., 1.1, 0.1):
+            if np.sum(rec >= t) == 0:
+                p = 0
+            else:
+                p = np.max(prec[rec >= t])
+            ap = ap + p / 11.
+    else:
+        # correct AP calculation
+        # first append sentinel values at the end
+        mrec = np.concatenate(([0.], rec, [1.]))
+        mpre = np.concatenate(([0.], prec, [0.]))
+
+        # compute the precision envelope
+        for i in range(mpre.size - 1, 0, -1):
+            mpre[i - 1] = np.maximum(mpre[i - 1], mpre[i])
+
+        # to calculate area under PR curve, look for points
+        # where X axis (recall) changes value
+        i = np.where(mrec[1:] != mrec[:-1])[0]
+
+        # and sum (\Delta recall) * prec
+        ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])
+
+    return ap, mpre, mrec
+
+
+def build_voc_gts(dataset, config, image_id, class_id,
+                    type, gt, count):
+    # Load annotations gt infomation
+    image, image_meta, gt_class_id, gt_bbox, gt_mask = \
+        modellib.load_image_gt(dataset, config, image_id)
+    for i, id in enumerate(gt_class_id):
+        if id in class_id:
+            ind = class_id.index(id)
+            if type == "bbox":
+                target = gt_bbox[i]
+            if type == "mask":
+                target = gt_mask[:, :, i]
+            if image_id not in gt[id].keys():
+                gt[ind][image_id] = {'region': [], 'det': []}
+            gt[ind][image_id]['region'].append(target)
+            gt[ind][image_id]['det'].append(False)
+            count[ind] += 1
+        else:
+            continue
+    return gt, count
+
+
+def build_voc_results(r, results, class_id, image_id, type, count):
+    if r["rois"] is None:
+        pass
+    assert r["rois"].shape[0] == r["class_ids"].shape[0] \
+           == r["scores"].shape[0] == r["masks"].shape[-1]
+
+    for i, id in enumerate(r["class_ids"]):
+        if id in class_id:
+            ind = class_id.index(id)
+            results[ind]["image_ids"].append(image_id)
+            results[ind]["confidence"].append(float(r["scores"][i]))
+            if type == "bbox":
+                target = r["rois"][i]
+            if type == "mask":
+                target = r["masks"][:, :, i]
+            results[ind]["region"].append(target)
+            count[ind] += 1
+        else:
+            continue
+    return results, count
 
 
 def assign_color_group(value, intervals=None, colors=None):
