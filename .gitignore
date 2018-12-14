@@ -56,3 +56,10 @@ pip-delete-this-directory.txt
 .venv
 venv/
 ENV/
+/requirements.txt
+concrete_mrcnn/compute_ap.ipynb
+concrete_mrcnn/detect_model.ipynb
+concrete_mrcnn/train_model_1.ipynb
+concrete_mrcnn/train_model_2_on_GPUs.ipynb
+concrete_mrcnn/train_plot.ipynb
+output/

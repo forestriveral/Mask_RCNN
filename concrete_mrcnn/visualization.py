@@ -3,23 +3,24 @@ import os
 import sys
 import cv2
 import random
-import itertools
+# import itertools
 import colorsys
-
+import pandas as pd
 import numpy as np
+from interval import Interval
 from skimage.measure import find_contours
 import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
-import IPython.display
+from mrcnn import model as modellib, utils
+from concrete_mrcnn.concrete_tools import build_concrete_results
+# import IPython.display
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
-from mrcnn import model as modellib, utils
-from concrete_mrcnn.concrete_tools import build_concrete_results
 
 
 def display_instances(image, boxes, masks, class_ids, class_names,
@@ -69,7 +70,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
     for i in range(N):
         # Mask
         mask = masks[:, :, i]
-        ignore, area, rate, diameter = mask_area_compute(i, mask,
+        ignore, area, rate, diameter = mask_area_compute(mask,
                                                          threshold=threshold)
         area_sum += area
         rate_sum += rate
@@ -91,8 +92,8 @@ def display_instances(image, boxes, masks, class_ids, class_names,
         y1, x1, y2, x2 = boxes[i]
         if show_bbox:
             p = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2,
-                                alpha=0.7, linestyle="dashed",
-                                edgecolor=color, facecolor='none')
+                                  alpha=0.7, linestyle="dashed",
+                                  edgecolor=color, facecolor='none')
             ax.add_patch(p)
 
         # Label
@@ -100,7 +101,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
             class_id = class_ids[i]
             score = scores[i] if scores is not None else None
             label = class_names[class_id]
-            x = random.randint(x1, (x1 + x2) // 2)
+            # x = random.randint(x1, (x1 + x2) // 2)
             caption = "{} {:.3f}|{:.2f}".format(label, score, rate) \
                 if score else label
         else:
@@ -138,7 +139,7 @@ def exclude_ignore_instance(boxes, masks, class_ids,
     for i in range(N):
         # Mask
         mask = masks[:, :, i]
-        ignore, area, rate, diameter = mask_area_compute(i, mask,
+        ignore, area, rate, diameter = mask_area_compute(mask,
                                                          threshold=threshold)
         if ignore:
             continue
@@ -152,8 +153,8 @@ def exclude_ignore_instance(boxes, masks, class_ids,
     return boxes, masks, class_ids, scores, keep_ix
 
 
-def mask_area_compute(i, mask, threshold=None):
-    threshold =threshold or 0.0
+def mask_area_compute(mask, threshold=None):
+    threshold = threshold or 0.0
     mask = mask.astype(np.uint8) * 255
     image_area = float(mask.shape[:2][0] * mask.shape[:2][1])
     _, contours, hireachy = cv2.findContours(mask,
@@ -183,7 +184,7 @@ def mask_area_compute(i, mask, threshold=None):
             ignore = True
         return ignore, mask_area, area_rate, diameter
     else:
-        raise "No contours in mask!"
+        raise ValueError("No contours in mask!")
 
 
 def contour_compute(contour, image_area, scale=None):
@@ -194,8 +195,8 @@ def contour_compute(contour, image_area, scale=None):
     return mask_area, area_rate, max_diameter
 
 
-def voc_ap_compute(model, config, dataset, image_ids, class_name=None,
-                     threshold=0.5, type="mask", ):
+def voc_ap_format(model, config, dataset, image_ids, class_names=None,
+                  limit=None, types="mask", save=False):
     # Pick COCO images from the dataset
     image_ids = image_ids or dataset.image_ids
 
@@ -208,96 +209,106 @@ def voc_ap_compute(model, config, dataset, image_ids, class_name=None,
     if isinstance(image_ids, int):
         print("Evaluate on Image ID {}".format(image_ids))
         image_ids = [image_ids]
-    # Get corresponding COCO image IDs.
-    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
 
-    if class_name is not None:
+    if class_names is not None:
         # class_id = [c["id"] for c in dataset.class_info if c["name"] in class_name]
-        class_id = [dataset.class_names.index(c) for c in class_name]
-        assert len(class_id) == len(class_name), "No repeat class name!"
+        class_id = [dataset.class_names.index(c) for c in class_names]
+        assert len(class_id) == len(class_names), "No repeat class name!"
     else:
         class_id = dataset.class_ids.remove(0)
 
     # Initiate the format to store gt or detection results
-    results = [{"image_ids":[],
+    results = [{"image_ids": [],
                 "confidence": [],
-                "region": []} for i in range(len(class_id))]
-    results_num = [0 for i in range(len(class_id))]
+                "region": []} for _ in range(len(class_id))]
+    results_num = [0 for _ in range(len(class_id))]
 
-    gt = [{} for i in range(len(class_id))]
-    gt_num = [0 for i in range(len(class_id))]
+    gt = [{} for _ in range(len(class_id))]
+    gt_num = [0 for _ in range(len(class_id))]
     for i, image_id in enumerate(image_ids):
-        # Load annotations gt infomation
+        # Load annotations gt information
         gt, gt_num = build_voc_gts(dataset, config, image_id, class_id,
-                    type, gt, gt_num)
+                                   types, gt, gt_num)
         # Load image
         image = dataset.load_image(image_id)
         # Run detection
         r = model.detect([image], verbose=0)[0]
         # Build the voc results
-        results, results_num= build_voc_results(r, results, class_id,
-                                                image_id, type, results_num)
+        results, results_num = build_voc_results(r, results, class_id,
+                                                 image_id, types, results_num)
 
+    if save:
+        pass
+
+    return class_id, results, gt, gt_num, results_num
+
+
+def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
+                   threshold=0.5, load=False):
     # Loop for every class need to compute ap
     precisions = {}
     recalls = {}
     maps = {}
     for i, cls in enumerate(class_id):
-        if class_name is None:
-            class_name = dataset.class_names[1:]
-        precisions[class_name[i]] = []
-        recalls[class_name[i]] = []
-        maps[class_name[i]] = []
+        # when class_name = None means all classes
+        if class_names is None:
+            class_names = dataset.class_names[1:]
+        precisions[class_names[i]] = []
+        recalls[class_names[i]] = []
+        maps[class_names[i]] = []
+        # If there is no instance of this class detected
+        if len(results[i]["image_ids"]) == 0 or len(results[i]["region"]) == 0:
+            prec, rec, ap = [-1], [-1], -1
+        else:
+            # sort by confidence
+            sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
+            region = np.array(results[i]["region"])[sorted_ind, :] if type == "bbox" else \
+                np.array(results[i]["region"])[:, :, sorted_ind]
+            image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
 
-        # sort by confidence
-        sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
-        region = np.array(results[i]["region"])[sorted_ind, :] if type == "bbox" else \
-            np.array(results[i]["region"])[:, :, sorted_ind]
-        image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
+            # go down dets and mark TPs and FPs
+            nd = len(image_ids)
+            tp = np.zeros(nd)
+            fp = np.zeros(nd)
+            for d in range(nd):
+                R = gt[i][image_ids[d]]
+                bb = region[d, :].astype(float) if type == "bbox" else region[:, :, d]
+                ovmax = -np.inf
+                BBGT = R['region'].astype(float)
 
-        # go down dets and mark TPs and FPs
-        nd = len(image_ids)
-        tp = np.zeros(nd)
-        fp = np.zeros(nd)
-        for d in range(nd):
-            R = gt[i][image_ids[d]]
-            bb = region[d, :].astype(float) if type == "bbox" else region[:, :, d]
-            ovmax = -np.inf
-            BBGT = R['region'].astype(float)
+                if BBGT.size > 0:
+                    # compute overlaps
+                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if type == "mask" else \
+                        utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
+                    assert overlaps.shape == (BBGT.shape[0], 1)
+                    ovmax = np.max(overlaps)
+                    jmax = np.argmax(overlaps)
 
-            if BBGT.size > 0:
-                # compute overlaps
-                overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if type == "mask" else \
-                    utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
-                assert overlaps.shape == (BBGT.shape[0], 1)
-                ovmax = np.max(overlaps)
-                jmax = np.argmax(overlaps)
-
-            if isinstance(threshold, (list, np.ndarray)):
-                pass
-            else:
-                assert isinstance(threshold, (float, int))
-                if ovmax > threshold:
-                    if not R['det'][jmax]:
-                        tp[d] = 1.
-                        R['det'][jmax] = 1
+                if isinstance(threshold, (list, np.ndarray)):
+                    pass
+                else:
+                    assert isinstance(threshold, (float, int))
+                    if ovmax > threshold:
+                        if not R['det'][jmax]:
+                            tp[d] = 1.
+                            R['det'][jmax] = 1
+                        else:
+                            fp[d] = 1.
                     else:
                         fp[d] = 1.
-                else:
-                    fp[d] = 1.
 
-            # compute precision recall
-            fp = np.cumsum(fp)
-            tp = np.cumsum(tp)
-            recall = tp / float(gt_num)
-            # avoid divide by zero in case the first detection matches a difficult
-            # ground truth
-            precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
-            map, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+                # compute precision recall
+                fp = np.cumsum(fp)
+                tp = np.cumsum(tp)
+                recall = tp / float(gt_num)
+                # avoid divide by zero in case the first detection matches a difficult
+                # ground truth
+                precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+                ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
 
-            precisions[class_name[i]].append(list(prec))
-            recalls[class_name[i]].append(list(rec))
-            maps[class_name[i]].append(float(map))
+        precisions[class_names[i]].append(list(prec))
+        recalls[class_names[i]].append(list(rec))
+        maps[class_names[i]].append(float(ap))
 
     return recalls, precisions, maps
 
@@ -315,6 +326,7 @@ def voc_ap(rec, prec, use_07_metric=False):
             else:
                 p = np.max(prec[rec >= t])
             ap = ap + p / 11.
+        mpre, mrec = [], []
     else:
         # correct AP calculation
         # first append sentinel values at the end
@@ -336,20 +348,20 @@ def voc_ap(rec, prec, use_07_metric=False):
 
 
 def build_voc_gts(dataset, config, image_id, class_id,
-                    type, gt, count):
-    # Load annotations gt infomation
+                  types, gt, count):
+    # Load annotations gt information
     image, image_meta, gt_class_id, gt_bbox, gt_mask = \
         modellib.load_image_gt(dataset, config, image_id)
-    for i, id in enumerate(gt_class_id):
-        if id in class_id:
-            ind = class_id.index(id)
-            if type == "bbox":
-                target = gt_bbox[i]
-            if type == "mask":
-                target = gt_mask[:, :, i]
-            if image_id not in gt[id].keys():
+    for i, idx in enumerate(gt_class_id):
+        if idx in class_id:
+            ind = class_id.index(idx)
+            # if types == "bbox":
+            #     target = gt_bbox[i]
+            # if types == "mask":
+            #     target = gt_mask[:, :, i]
+            if image_id not in gt[idx].keys():
                 gt[ind][image_id] = {'region': [], 'det': []}
-            gt[ind][image_id]['region'].append(target)
+            gt[ind][image_id]['region'].append(gt_bbox[i, :] if types == "bbox" else gt_mask[:, :, i])
             gt[ind][image_id]['det'].append(False)
             count[ind] += 1
         else:
@@ -357,22 +369,22 @@ def build_voc_gts(dataset, config, image_id, class_id,
     return gt, count
 
 
-def build_voc_results(r, results, class_id, image_id, type, count):
+def build_voc_results(r, results, class_id, image_id, types, count):
     if r["rois"] is None:
         pass
     assert r["rois"].shape[0] == r["class_ids"].shape[0] \
            == r["scores"].shape[0] == r["masks"].shape[-1]
 
-    for i, id in enumerate(r["class_ids"]):
-        if id in class_id:
-            ind = class_id.index(id)
+    for i, idx in enumerate(r["class_ids"]):
+        if idx in class_id:
+            ind = class_id.index(idx)
             results[ind]["image_ids"].append(image_id)
             results[ind]["confidence"].append(float(r["scores"][i]))
-            if type == "bbox":
-                target = r["rois"][i]
-            if type == "mask":
-                target = r["masks"][:, :, i]
-            results[ind]["region"].append(target)
+            # if types == "bbox":
+            #     target = r["rois"][i]
+            # if types == "mask":
+            #     target = r["masks"][:, :, i]
+            results[ind]["region"].append(r["rois"][i, :] if types == "bbox" else r["masks"][:, :, i])
             count[ind] += 1
         else:
             continue
@@ -387,17 +399,17 @@ def assign_color_group(value, intervals=None, colors=None):
 
     if value < intervals[0]:
         color = (1.0, 1.0, 1.0)
-    elif value > intervals[0] and value < intervals[1]:
-        color = colors[0]
-    elif value > intervals[1] and value < intervals[2]:
-        color = colors[1]
-    elif value > intervals[2] and value < intervals[3]:
-        color = colors[2]
-    elif value > intervals[3] and value < intervals[4]:
-        color = colors[3]
+        return color
+    elif value in Interval(intervals[0], intervals[1]):
+        return colors[0]
+    elif value in Interval(intervals[1], intervals[2]):
+        return colors[1]
+    elif value in Interval(intervals[2], intervals[3]):
+        return colors[2]
+    elif value in Interval(intervals[3], intervals[4]):
+        return colors[3]
     elif value > intervals[4]:
-        color = colors[4]
-    return color
+        return colors[4]
 
 
 def group_colors():
@@ -435,10 +447,12 @@ def plot_loss_curve(path, figsize=(16, 16), save=False, save_path=None):
 
     font = {'family': 'Times New Roman',
             'weight': 'bold',
-            'size': 20,}
+            'size': 20,
+            }
     font_legend = {'family': 'Times New Roman',
                    'weight': 'bold',
-                   'size': 15,}
+                   'size': 15,
+                   }
 
     plt.figure(figsize=figsize)
     plt.subplots()
@@ -454,9 +468,9 @@ def plot_loss_curve(path, figsize=(16, 16), save=False, save_path=None):
     plt.tick_params(labelsize=15)
     labels = ax.get_xticklabels() + ax.get_yticklabels()
     [label.set_fontname('Times New Roman') for label in labels]
-    #ax.spines['top'].set_color('none')
-    #ax.spines['right'].set_color('none')
-    #ax.yaxis.grid(True, which='major')
+    # ax.spines['top'].set_color('none')
+    # ax.spines['right'].set_color('none')
+    # ax.yaxis.grid(True, which='major')
 
     plt.legend(loc="upper right", prop=font_legend,
                edgecolor='None', frameon=False,
@@ -474,11 +488,11 @@ def plot_multi_loss_curve(data, figsize=(16, 16),
     font = {'family': 'Times New Roman',
             'weight': 'bold',
             'size': 20,
-           }
+            }
     font_legend = {'family': 'Times New Roman',
                    'weight': 'bold',
                    'size': 15,
-                  }
+                   }
     colors = [(0.0, 1.0, 0.0), (0.0, 0.0, 0.95),
               (1.0, 1.0, 0.0), (1.0, 0.0, 0.0),
               (1.0, 0.0, 1.0)]
@@ -486,8 +500,8 @@ def plot_multi_loss_curve(data, figsize=(16, 16),
     plt.figure(figsize=figsize)
     plt.subplots()
     for i in range(5):
-        loss = list(df.columns.values)[i+2]
-        label = ' '.join(list(df.columns.values)[i+2].split('_'))
+        loss = list(data.columns.values)[i+2]
+        label = ' '.join(list(data.columns.values)[i+2].split('_'))
         plt.plot(data['epoch'], data[loss], ls=linestyles.pop(), c=colors.pop(),
                  lw=1.5, label=label)
     plt.xlim(0, len(data['epoch'])), plt.xlabel('Epochs', font), plt.ylabel('Loss', font)
@@ -496,9 +510,9 @@ def plot_multi_loss_curve(data, figsize=(16, 16),
     plt.tick_params(labelsize=15)
     labels = ax.get_xticklabels() + ax.get_yticklabels()
     [label.set_fontname('Times New Roman') for label in labels]
-    #ax.spines['top'].set_color('none')
-    #ax.spines['right'].set_color('none')
-    #ax.yaxis.grid(True, which='major')
+    # ax.spines['top'].set_color('none')
+    # ax.spines['right'].set_color('none')
+    # ax.yaxis.grid(True, which='major')
 
     plt.legend(loc="best", prop=font_legend,
                edgecolor='None', frameon=False,
