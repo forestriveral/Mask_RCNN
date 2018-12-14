@@ -3,7 +3,7 @@ import os
 import sys
 import cv2
 import random
-# import itertools
+import json
 import colorsys
 import pandas as pd
 import numpy as np
@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
 from mrcnn import model as modellib, utils
-from concrete_mrcnn.concrete_tools import build_concrete_results
+# from concrete_mrcnn.concrete_tools import build_concrete_results
 # import IPython.display
 
 # Root directory of the project
@@ -238,13 +238,34 @@ def voc_ap_format(model, config, dataset, image_ids, class_names=None,
                                                  image_id, types, results_num)
 
     if save:
-        pass
+        gt_name = "./{}_gt.json".format(types)
+        with open(gt_name, 'w', encoding='utf-8') as f:
+            json.dump(gt, f)
+            print("\nGt annotation file saved done! "
+                  "Gt instances number: {}\n".format(gt_num))
+
+        result_name = "./{}_results.json".format(types)
+        with open(result_name, 'w', encoding='utf-8') as f:
+            json.dump(results, f)
+            print("\nDetection results file saved done! "
+                  "Detected instances number: {}\n".format(results_num))
 
     return class_id, results, gt, gt_num, results_num
 
 
 def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
-                   threshold=0.5, load=False):
+                   types="bbox", threshold=0.5, load=False):
+    if load:
+        gt_name = "./{}_gt.json".format(types)
+        with open(gt_name, 'r', encoding='utf-8') as f:
+            print("Loading gt annotation file ...")
+            gt = json.load(f)
+
+        result_name = "./{}_results.json".format(types)
+        with open(result_name, 'r', encoding='utf-8') as f:
+            print("Loading detection results file ...")
+            results = json.load(f)
+
     # Loop for every class need to compute ap
     precisions = {}
     recalls = {}
@@ -262,7 +283,7 @@ def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
         else:
             # sort by confidence
             sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
-            region = np.array(results[i]["region"])[sorted_ind, :] if type == "bbox" else \
+            region = np.array(results[i]["region"])[sorted_ind, :] if types == "bbox" else \
                 np.array(results[i]["region"])[:, :, sorted_ind]
             image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
 
@@ -272,13 +293,13 @@ def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
             fp = np.zeros(nd)
             for d in range(nd):
                 R = gt[i][image_ids[d]]
-                bb = region[d, :].astype(float) if type == "bbox" else region[:, :, d]
+                bb = region[d, :].astype(float) if types == "bbox" else region[:, :, d]
                 ovmax = -np.inf
                 BBGT = R['region'].astype(float)
 
                 if BBGT.size > 0:
                     # compute overlaps
-                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if type == "mask" else \
+                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if types == "mask" else \
                         utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
                     assert overlaps.shape == (BBGT.shape[0], 1)
                     ovmax = np.max(overlaps)
