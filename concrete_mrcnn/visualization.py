@@ -5,6 +5,7 @@ import cv2
 import random
 import json
 import colorsys
+import collections
 import pandas as pd
 import numpy as np
 from interval import Interval
@@ -195,14 +196,14 @@ def contour_compute(contour, image_area, scale=None):
     return mask_area, area_rate, max_diameter
 
 
-def voc_ap_format(model, config, dataset, image_ids, class_names=None,
+def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
                   limit=None, types="mask", save=False):
     # Pick COCO images from the dataset
     image_ids = image_ids or dataset.image_ids
 
     # Limit to a subset
     if limit:
-        image_ids = image_ids[:limit]
+        image_ids = random.sample(list(image_ids), limit)
 
     assert isinstance(image_ids, (list, int)),\
         "Images list or selected image!"
@@ -210,12 +211,13 @@ def voc_ap_format(model, config, dataset, image_ids, class_names=None,
         print("Evaluate on Image ID {}".format(image_ids))
         image_ids = [image_ids]
 
+    cls = dataset.class_names
     if class_names is not None:
         # class_id = [c["id"] for c in dataset.class_info if c["name"] in class_name]
-        class_id = [dataset.class_names.index(c) for c in class_names]
+        class_id = [cls.index(c) for c in class_names]
         assert len(class_id) == len(class_names), "No repeat class name!"
     else:
-        class_id = dataset.class_ids.remove(0)
+        class_id = dataset.class_ids[1:]
 
     # Initiate the format to store gt or detection results
     results = [{"image_ids": [],
@@ -236,6 +238,24 @@ def voc_ap_format(model, config, dataset, image_ids, class_names=None,
         # Build the voc results
         results, results_num = build_voc_results(r, results, class_id,
                                                  image_id, types, results_num)
+    # Check whether instances of each class exist or not?
+    assert len(results) == len(gt)
+    no_instance_class = [[], []]
+    for i, (x, y) in enumerate(zip(results, gt)):
+        if not x["region"]:
+            no_instance_class[0].append(cls[class_id[i]])
+        if not y:
+            no_instance_class[1].append(cls[class_id[i]])
+    if no_instance_class[0]:
+        print("No instances of following class are detected:\n",
+              no_instance_class[0] if len(no_instance_class[0]) < 10 else len(no_instance_class[0]))
+        if len(no_instance_class[0]) < 10:
+            print("Detected classes: \n{}".format(set(cls[1:]) - set(no_instance_class[0])))
+    if no_instance_class[1]:
+        print("No groundtruth of following class are found\n",
+              no_instance_class[1] if len(no_instance_class[1]) < 10 else len(no_instance_class[1]))
+        if len(no_instance_class[1]) < 10:
+            print("Groundtruth classes: \n{}".format(set(cls[1:]) - set(no_instance_class[1])))
 
     if save:
         gt_name = "./{}_gt.json".format(types)
@@ -253,8 +273,9 @@ def voc_ap_format(model, config, dataset, image_ids, class_names=None,
     return class_id, results, gt, gt_num, results_num
 
 
-def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
-                   types="bbox", threshold=0.5, load=False):
+def voc_ap_compute(dataset, class_id, results, gt, gt_num,
+                   class_names=None, types="bbox", threshold=0.5,
+                   load=False):
     if load:
         gt_name = "./{}_gt.json".format(types)
         with open(gt_name, 'r', encoding='utf-8') as f:
@@ -266,21 +287,25 @@ def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
             print("Loading detection results file ...")
             results = json.load(f)
 
+    # Check files
+
     # Loop for every class need to compute ap
     precisions = {}
     recalls = {}
     maps = {}
     for i, cls in enumerate(class_id):
-        # when class_name = None means all classes
-        if class_names is None:
-            class_names = dataset.class_names[1:]
-        precisions[class_names[i]] = []
-        recalls[class_names[i]] = []
-        maps[class_names[i]] = []
         # If there is no instance of this class detected
-        if len(results[i]["image_ids"]) == 0 or len(results[i]["region"]) == 0:
-            prec, rec, ap = [-1], [-1], -1
+        if (not results[i]["region"]) or (not results[i]["confidence"]):
+            # results[i] = {}
+            continue
         else:
+            # While class_name = None means all classes
+            if class_names is None:
+                class_names = dataset.class_names[1:]
+            precisions[class_names[i]] = []
+            recalls[class_names[i]] = []
+            maps[class_names[i]] = []
+
             # sort by confidence
             sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
             region = np.array(results[i]["region"])[sorted_ind, :] if types == "bbox" else \
@@ -292,18 +317,24 @@ def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
             tp = np.zeros(nd)
             fp = np.zeros(nd)
             for d in range(nd):
+                if not image_ids[d] in gt[i]:
+                    fp[d] = 1
+                    # print('No gt instances but detected out:', image_ids[d])
+                    continue
+
                 R = gt[i][image_ids[d]]
-                bb = region[d, :].astype(float) if types == "bbox" else region[:, :, d]
+                bb = region[d, :].astype(float)[None, ...] if types == "bbox" \
+                    else region[:, :, d][..., None]
                 ovmax = -np.inf
-                BBGT = R['region'].astype(float)
+                BBGT = np.array(R['region']).astype(float)
 
                 if BBGT.size > 0:
                     # compute overlaps
-                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if types == "mask" else \
+                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if types == "bbox" else \
                         utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
-                    assert overlaps.shape == (BBGT.shape[0], 1)
-                    ovmax = np.max(overlaps)
-                    jmax = np.argmax(overlaps)
+                    assert overlaps.shape == (1, BBGT.shape[0])
+                    ovmax = np.max(np.squeeze(overlaps))
+                    jmax = np.argmax(np.squeeze(overlaps))
 
                 if isinstance(threshold, (list, np.ndarray)):
                     pass
@@ -321,15 +352,18 @@ def voc_ap_compute(dataset, class_names, class_id, results, gt, gt_num,
                 # compute precision recall
                 fp = np.cumsum(fp)
                 tp = np.cumsum(tp)
-                recall = tp / float(gt_num)
+                recall = tp / float(gt_num[i])
                 # avoid divide by zero in case the first detection matches a difficult
                 # ground truth
                 precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
                 ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
 
-        precisions[class_names[i]].append(list(prec))
-        recalls[class_names[i]].append(list(rec))
-        maps[class_names[i]].append(float(ap))
+            precisions[class_names[i]].append(list(prec))
+            recalls[class_names[i]].append(list(rec))
+            maps[class_names[i]].append(float(ap))
+
+    # Clean the class that has no instances detected
+    # results = clean_duplicates(results)
 
     return recalls, precisions, maps
 
@@ -375,12 +409,12 @@ def build_voc_gts(dataset, config, image_id, class_id,
         modellib.load_image_gt(dataset, config, image_id)
     for i, idx in enumerate(gt_class_id):
         if idx in class_id:
-            ind = class_id.index(idx)
+            ind = list(class_id).index(idx)
             # if types == "bbox":
             #     target = gt_bbox[i]
             # if types == "mask":
             #     target = gt_mask[:, :, i]
-            if image_id not in gt[idx].keys():
+            if image_id not in gt[ind].keys():
                 gt[ind][image_id] = {'region': [], 'det': []}
             gt[ind][image_id]['region'].append(gt_bbox[i, :] if types == "bbox" else gt_mask[:, :, i])
             gt[ind][image_id]['det'].append(False)
@@ -398,7 +432,7 @@ def build_voc_results(r, results, class_id, image_id, types, count):
 
     for i, idx in enumerate(r["class_ids"]):
         if idx in class_id:
-            ind = class_id.index(idx)
+            ind = list(class_id).index(idx)
             results[ind]["image_ids"].append(image_id)
             results[ind]["confidence"].append(float(r["scores"][i]))
             # if types == "bbox":
@@ -410,6 +444,20 @@ def build_voc_results(r, results, class_id, image_id, types, count):
         else:
             continue
     return results, count
+
+
+def clean_duplicates(seq, remove):
+    l1 = seq
+    c = collections.Counter(l1)
+    l2 = sorted(set(l1), key=l1.index)
+    l2.remove(remove)
+    for k, v in c.items():
+        if k != remove and v != 1:
+            raise ValueError("Invalid list!")
+    if len(l1) - len(l2) != c[-1]:
+        raise ValueError("Invalid list!")
+    else:
+        return l2
 
 
 def assign_color_group(value, intervals=None, colors=None):
