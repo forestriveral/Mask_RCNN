@@ -315,7 +315,7 @@ def plot_precision_recall(AP, precisions, recalls, threshold=None):
     else:
         threshold = 0.5
     # Plot the Precision-Recall curve
-    _, ax = plt.subplots(1)
+    _, ax = plt.subplots(1, figsize=(10, 10))
     if isinstance(threshold, float):
         ax.set_title("Precision-Recall Curve. AP@{:.2f} = {:.3f}".format(threshold, AP))
     else:
@@ -424,7 +424,7 @@ def draw_boxes(image, boxes=None, refined_boxes=None,
             y1, x1, y2, x2 = boxes[i]
             p = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, linewidth=2,
                                   alpha=alpha, linestyle=style,
-                                  edgecolor=color, facecolor='none')
+                                  _1edgecolor=color, facecolor='none')
             ax.add_patch(p)
 
         # Refined boxes

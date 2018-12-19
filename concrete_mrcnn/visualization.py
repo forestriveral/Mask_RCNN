@@ -3,6 +3,7 @@ import os
 import sys
 import cv2
 import random
+import copy
 import json
 import colorsys
 import collections
@@ -14,7 +15,8 @@ import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
 from mrcnn import model as modellib, utils
-# from concrete_mrcnn.concrete_tools import build_concrete_results
+from mrcnn import visualize
+# from concrete_mrcnn.concrete import get_ax
 # import IPython.display
 
 # Root directory of the project
@@ -205,7 +207,11 @@ def contour_compute(contour, image_area, scale=None):
 def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
                   limit=None, types="mask", save=False):
     # Pick COCO images from the dataset
-    image_ids = image_ids or dataset.image_ids
+    if image_ids:
+        image_ids = image_ids
+        limit = None
+    else:
+        image_ids = dataset.image_ids
 
     # Limit to a subset
     if limit:
@@ -235,12 +241,11 @@ def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
     gt_num = [0 for _ in range(len(class_id))]
     for i, image_id in enumerate(image_ids):
         # Load annotations gt information
-        gt, gt_num = build_voc_gts(dataset, config, image_id, class_id,
-                                   types, gt, gt_num)
-        # Load image
-        image = dataset.load_image(image_id)
+        gt, gt_num, image = build_voc_gts(dataset, config, image_id, class_id,
+                                          types, gt, gt_num)
         # Run detection
         r = model.detect([image], verbose=0)[0]
+
         # Build the voc results
         results, results_num = build_voc_results(r, results, class_id,
                                                  image_id, types, results_num)
@@ -279,30 +284,30 @@ def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
     return class_id, results, gt, gt_num, results_num
 
 
-def voc_ap_compute(dataset, class_id, results, gt, gt_num,
+def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                    class_names=None, types="bbox", threshold=0.5,
-                   load=False):
+                   load=False, debug=False):
     if load:
         gt_name = "./{}_gt.json".format(types)
         with open(gt_name, 'r', encoding='utf-8') as f:
             print("Loading gt annotation file ...")
-            gt = json.load(f)
+            groundtruth = json.load(f)
 
         result_name = "./{}_results.json".format(types)
         with open(result_name, 'r', encoding='utf-8') as f:
             print("Loading detection results file ...")
-            results = json.load(f)
+            detection = json.load(f)
 
-    # Check files
-
+    # Copy gt file
+    gt = copy.deepcopy(groundtruth)
     # Loop for every class need to compute ap
     precisions = {}
     recalls = {}
     maps = {}
     for i, cls in enumerate(class_id):
         # If there is no instance of this class detected
-        if (not results[i]["region"]) or (not results[i]["confidence"]):
-            # results[i] = {}
+        if (not detection[i]["region"]) or (not detection[i]["confidence"]):
+            # detection[i] = {}
             continue
         else:
             # While class_name = None means all classes
@@ -313,37 +318,39 @@ def voc_ap_compute(dataset, class_id, results, gt, gt_num,
             maps[class_names[i]] = []
 
             # sort by confidence
-            sorted_ind = np.argsort(-1 * np.array(results[i]["confidence"]))
-            region = np.array(results[i]["region"])[sorted_ind, :] if types == "bbox" else \
-                np.array(results[i]["region"])[:, :, sorted_ind]
-            image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
+            sorted_ind = np.argsort(-1 * np.array(detection[i]["confidence"]))
+            region = np.array(detection[i]["region"])[sorted_ind, :] if types == "bbox" else \
+                np.array(detection[i]["region"])[:, :, sorted_ind]
+            image_ids = [detection[i]["image_ids"][x] for x in sorted_ind]
 
-            debug_tools(i, sorted_ind)
-            debug_tools(i, region)
-            debug_tools(i, image_ids)
+            # Debug
+            if debug:
+                debug_tools(i, len(sorted_ind))
+            # debug_tools(i, region)
+            # debug_tools(i, image_ids)
 
             # go down dets and mark TPs and FPs
             nd = len(image_ids)
             tp = np.zeros(nd)
             fp = np.zeros(nd)
             for d in range(nd):
-                if not image_ids[d] in gt[i].keys():
+                if image_ids[d] not in gt[i].keys():
                     fp[d] = 1
                     # print('No gt instances but detected out:', image_ids[d])
                     continue
                 m = 1
 
                 r = gt[i][image_ids[d]]
-                bb = region[d, :].astype(float)[None, ...] if types == "bbox" \
+                bb = region[d, :].astype(np.float32)[None, ...] if types == "bbox" \
                     else region[:, :, d][..., None]
                 ovmax = -np.inf
-                bbgt = np.array(r['region']).astype(float)
+                bbgt = np.array(r['region']).astype(np.float32)
 
-                if d == m:
-                    debug_tools(i, r)
-                    debug_tools(i, bb)
-                    debug_tools(i, ovmax)
-                    debug_tools(i, bbgt)
+                if debug:
+                    if d == m:
+                        debug_tools(i, r)
+                        debug_tools(i, bb)
+                        debug_tools(i, bbgt)
 
                 if bbgt.size > 0:
                     # compute overlaps
@@ -354,10 +361,11 @@ def voc_ap_compute(dataset, class_id, results, gt, gt_num,
                     ovmax = np.max(np.squeeze(overlaps))
                     jmax = np.argmax(np.squeeze(overlaps))
 
-                if d == m:
-                    debug_tools(i, overlaps)
-                    debug_tools(i, ovmax)
-                    debug_tools(i, jmax)
+                if debug:
+                    if d == m:
+                        debug_tools(i, overlaps)
+                        debug_tools(i, ovmax)
+                        debug_tools(i, jmax)
 
                 if isinstance(threshold, (list, np.ndarray)):
                     pass
@@ -372,11 +380,14 @@ def voc_ap_compute(dataset, class_id, results, gt, gt_num,
                     else:
                         fp[d] = 1.
 
-                if d == m:
-                    debug_tools(i, tp)
-                    debug_tools(i, fp)
-                    debug_tools(i, r)
+                if debug:
+                    if d == m:
+                        debug_tools(i, np.count_nonzero(tp))
+                        debug_tools(i, np.count_nonzero(fp))
+                        debug_tools(i, r['det'])
 
+            # Check results
+            # assert int(fp[-1] + tp[-1]) == region.shape[0]
             # compute precision recall
             fp = np.cumsum(fp)
             tp = np.cumsum(tp)
@@ -386,23 +397,33 @@ def voc_ap_compute(dataset, class_id, results, gt, gt_num,
             precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
             ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
 
+            if debug:
+                # Debug
+                # print("GT: ", gt[0])
+                print("\nFP: ", fp[-1])
+                print("TP: ", tp[-1])
+                print("Recall: ", len(recall))
+                print("Precision: ", len(precision))
+                print("AP: ", ap)
+
         precisions[class_names[i]].append(list(prec))
         recalls[class_names[i]].append(list(rec))
         maps[class_names[i]].append(float(ap))
 
     # Clean the class that has no instances detected
-    # results = clean_duplicates(results)
+    # detection = clean_duplicates(detection)
 
     return recalls, precisions, maps
 
 
 def debug_tools(i, output):
-    if i == 2:
+    if i == 0:
         print("\nOutput:\n{}".format(output))
         if isinstance(output, np.ndarray):
             print("Shape:\n{}".format(output.shape))
         if isinstance(output, (list, dict)):
             print("Length:\n{}".format(len(output)))
+        # print("Type:\n{}".format(type(output)))
 
 
 def voc_overlaps(gt, det):
@@ -477,14 +498,14 @@ def build_voc_gts(dataset, config, image_id, class_id,
             count[ind] += 1
         else:
             continue
-    return gt, count
+    return gt, count, image
 
 
 def build_voc_results(r, results, class_id, image_id, types, count):
     if r["rois"] is None:
         pass
-    assert r["rois"].shape[0] == r["class_ids"].shape[0] \
-           == r["scores"].shape[0] == r["masks"].shape[-1]
+    assert r["rois"].shape[0] == r["class_ids"].shape[0]
+    assert r["scores"].shape[0] == r["masks"].shape[-1]
 
     for i, idx in enumerate(r["class_ids"]):
         if idx in class_id:
