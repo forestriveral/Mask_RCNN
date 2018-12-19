@@ -26,7 +26,7 @@ sys.path.append(ROOT_DIR)  # To find local version of the library
 
 def display_instances(image, boxes, masks, class_ids, class_names,
                       scores=None, title="",
-                      figsize=(16, 16), ax=None,
+                      figsize=(16, 16), ax=None, save=False,
                       show_mask=True, show_bbox=True, show_group=False,
                       colors=None, captions=None, threshold=None):
     """
@@ -108,7 +108,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
         else:
             caption = captions[i]
         ax.text(x1, y1 - 5, caption,
-                color='b', size=10, backgroundcolor="None")
+                color='w', size=10, backgroundcolor="None")
 
         # Mask Polygon
         # Pad to ensure proper polygons for masks that touch image edges.
@@ -122,6 +122,12 @@ def display_instances(image, boxes, masks, class_ids, class_names,
             p = Polygon(verts, facecolor="none", edgecolor=color)
             ax.add_patch(p)
     ax.imshow(masked_image.astype(np.uint8))
+
+    if save:
+        plt.margins(0, 0)
+        plt.savefig('./detected_image.png', dpi=300, bbox_inches='tight')
+        print("Save done!")
+
     if auto_show:
         plt.show()
 
@@ -312,60 +318,110 @@ def voc_ap_compute(dataset, class_id, results, gt, gt_num,
                 np.array(results[i]["region"])[:, :, sorted_ind]
             image_ids = [results[i]["image_ids"][x] for x in sorted_ind]
 
+            debug_tools(i, sorted_ind)
+            debug_tools(i, region)
+            debug_tools(i, image_ids)
+
             # go down dets and mark TPs and FPs
             nd = len(image_ids)
             tp = np.zeros(nd)
             fp = np.zeros(nd)
             for d in range(nd):
-                if not image_ids[d] in gt[i]:
+                if not image_ids[d] in gt[i].keys():
                     fp[d] = 1
                     # print('No gt instances but detected out:', image_ids[d])
                     continue
+                m = 1
 
-                R = gt[i][image_ids[d]]
+                r = gt[i][image_ids[d]]
                 bb = region[d, :].astype(float)[None, ...] if types == "bbox" \
                     else region[:, :, d][..., None]
                 ovmax = -np.inf
-                BBGT = np.array(R['region']).astype(float)
+                bbgt = np.array(r['region']).astype(float)
 
-                if BBGT.size > 0:
+                if d == m:
+                    debug_tools(i, r)
+                    debug_tools(i, bb)
+                    debug_tools(i, ovmax)
+                    debug_tools(i, bbgt)
+
+                if bbgt.size > 0:
                     # compute overlaps
-                    overlaps = utils.compute_overlaps(BBGT, bb).transpose(1, 0) if types == "bbox" else \
-                        utils.compute_overlaps_masks(BBGT, bb).transpose(1, 0)
-                    assert overlaps.shape == (1, BBGT.shape[0])
+                    # overlaps = voc_overlaps(bbgt, gt)
+                    overlaps = utils.compute_overlaps(bbgt, bb).transpose(1, 0) if types == "bbox" else \
+                        utils.compute_overlaps_masks(bbgt, bb).transpose(1, 0)
+                    assert overlaps.shape == (1, bbgt.shape[0])
                     ovmax = np.max(np.squeeze(overlaps))
                     jmax = np.argmax(np.squeeze(overlaps))
+
+                if d == m:
+                    debug_tools(i, overlaps)
+                    debug_tools(i, ovmax)
+                    debug_tools(i, jmax)
 
                 if isinstance(threshold, (list, np.ndarray)):
                     pass
                 else:
                     assert isinstance(threshold, (float, int))
                     if ovmax > threshold:
-                        if not R['det'][jmax]:
+                        if not r['det'][jmax]:
                             tp[d] = 1.
-                            R['det'][jmax] = 1
+                            r['det'][jmax] = 1
                         else:
                             fp[d] = 1.
                     else:
                         fp[d] = 1.
 
-                # compute precision recall
-                fp = np.cumsum(fp)
-                tp = np.cumsum(tp)
-                recall = tp / float(gt_num[i])
-                # avoid divide by zero in case the first detection matches a difficult
-                # ground truth
-                precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
-                ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+                if d == m:
+                    debug_tools(i, tp)
+                    debug_tools(i, fp)
+                    debug_tools(i, r)
 
-            precisions[class_names[i]].append(list(prec))
-            recalls[class_names[i]].append(list(rec))
-            maps[class_names[i]].append(float(ap))
+            # compute precision recall
+            fp = np.cumsum(fp)
+            tp = np.cumsum(tp)
+            recall = tp / float(gt_num[i])
+            # avoid divide by zero in case the first detection matches a difficult
+            # ground truth
+            precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
+            ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+
+        precisions[class_names[i]].append(list(prec))
+        recalls[class_names[i]].append(list(rec))
+        maps[class_names[i]].append(float(ap))
 
     # Clean the class that has no instances detected
     # results = clean_duplicates(results)
 
     return recalls, precisions, maps
+
+
+def debug_tools(i, output):
+    if i == 2:
+        print("\nOutput:\n{}".format(output))
+        if isinstance(output, np.ndarray):
+            print("Shape:\n{}".format(output.shape))
+        if isinstance(output, (list, dict)):
+            print("Length:\n{}".format(len(output)))
+
+
+def voc_overlaps(gt, det):
+    # compute overlaps
+    # intersection
+    ixmin = np.maximum(gt[:, 0], det[0])
+    iymin = np.maximum(gt[:, 1], det[1])
+    ixmax = np.minimum(gt[:, 2], det[2])
+    iymax = np.minimum(gt[:, 3], det[3])
+    iw = np.maximum(ixmax - ixmin + 1., 0.)
+    ih = np.maximum(iymax - iymin + 1., 0.)
+    inters = iw * ih
+
+    # union
+    uni = ((det[2] - det[0] + 1.) * (det[3] - det[1] + 1.) +
+           (gt[:, 2] - gt[:, 0] + 1.) *
+           (gt[:, 3] - gt[:, 1] + 1.) - inters)
+    overlaps = inters / uni
+    return overlaps
 
 
 def voc_ap(rec, prec, use_07_metric=False):
