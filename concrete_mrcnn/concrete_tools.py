@@ -1,8 +1,8 @@
 
 import glob
-from scipy import interpolate
 from concrete_mrcnn.concrete import *
 from samples.coco import coco
+from concrete_mrcnn import visualization
 
 
 def train_strategy(command, weights, dataset, version, stage, logs,
@@ -247,7 +247,6 @@ def precision_recall(config, mode, subset, version, weights, logs, gpu=None,
         #Plot results
         visualize.plot_precision_recall(aps, precisions, recalls, threshold)
 
-    # logs_clean(logs)
 
 # Compute VOC-style Average Precision
 def compute_batch_ap(model, dataset, config, image_ids, threshold,
@@ -295,7 +294,7 @@ def compute_batch_ap(model, dataset, config, image_ids, threshold,
 
     aps = np.array(aps).mean()
     if curve:
-        recall, precision = format_interpolate(recall, precision)
+        recall, precision = visualization.format_interpolate(recall, precision)
 
     if not isinstance(threshold, float):
         print("mAP @IoU={:.2f}-{:.2f}:\t {:.3f}".format(float(threshold[0]),
@@ -305,22 +304,6 @@ def compute_batch_ap(model, dataset, config, image_ids, threshold,
 
     return aps, precision, recall, overlaps
 
-
-def format_interpolate(r, p):
-    assert isinstance(r, list), "Recalls must be list type!"
-    r = np.array(r)
-    p = np.array(p)
-    num = max([r[i].shape[0] for i in range(r.shape[0])])
-    r_new = np.linspace(0., 1., num)
-    p_news = np.zeros([len(r), num])
-    for i in range(len(r)):
-        f = interpolate.interp1d(r[i], p[i], kind='slinear')
-        p_new = f(r_new)
-        p_news[i, :] = p_new
-    assert p_news.shape == (len(r), num)
-    p_new = np.mean(p_news, axis=0)
-
-    return r_new, p_new
 
 def display_differences(config, dirname, config_display=True, device = "/gpu:0"):
     if config == "coco":

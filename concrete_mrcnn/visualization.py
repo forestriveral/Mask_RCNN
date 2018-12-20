@@ -9,10 +9,12 @@ import colorsys
 import collections
 import pandas as pd
 import numpy as np
+from scipy import interpolate
 from interval import Interval
+from sklearn.metrics import auc
 from skimage.measure import find_contours
 import matplotlib.pyplot as plt
-from matplotlib import patches,  lines
+from matplotlib import patches,  lines, rcParams
 from matplotlib.patches import Polygon
 from mrcnn import model as modellib, utils
 from mrcnn import visualize
@@ -301,9 +303,11 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
     # Copy gt file
     gt = copy.deepcopy(groundtruth)
     # Loop for every class need to compute ap
-    precisions = {}
-    recalls = {}
-    maps = {}
+    evaluation = ["precisions", "recalls", "maps", "fprs", "tprs", "aucs"]
+    targets = {}
+    for eva in evaluation:
+        targets[eva] = {}
+    # precisions, recalls, maps, fprs, tprs, aucs = {}, {}, {}, {}, {}, {}
     for i, cls in enumerate(class_id):
         # If there is no instance of this class detected
         if (not detection[i]["region"]) or (not detection[i]["confidence"]):
@@ -313,9 +317,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # While class_name = None means all classes
             if class_names is None:
                 class_names = dataset.class_names[1:]
-            precisions[class_names[i]] = []
-            recalls[class_names[i]] = []
-            maps[class_names[i]] = []
+            for k in targets.keys():
+                targets[k][class_names[i]] = []
 
             # sort by confidence
             sorted_ind = np.argsort(-1 * np.array(detection[i]["confidence"]))
@@ -338,7 +341,6 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                     fp[d] = 1
                     # print('No gt instances but detected out:', image_ids[d])
                     continue
-                m = 1
 
                 r = gt[i][image_ids[d]]
                 bb = region[d, :].astype(np.float32)[None, ...] if types == "bbox" \
@@ -347,6 +349,7 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                 bbgt = np.array(r['region']).astype(np.float32)
 
                 if debug:
+                    m = 1
                     if d == m:
                         debug_tools(i, r)
                         debug_tools(i, bb)
@@ -368,7 +371,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                         debug_tools(i, jmax)
 
                 if isinstance(threshold, (list, np.ndarray)):
-                    pass
+                    for t in threshold:
+                        pass
                 else:
                     assert isinstance(threshold, (float, int))
                     if ovmax > threshold:
@@ -391,9 +395,13 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # compute precision recall
             fp = np.cumsum(fp)
             tp = np.cumsum(tp)
-            recall = tp / float(gt_num[i])
+            # compute true positive rate and false negative
+            fpr = fp / fp[-1]
+            tpr = tp / tp[-1]
+            area = auc(fpr, tpr)
             # avoid divide by zero in case the first detection matches a difficult
             # ground truth
+            recall = tp / float(gt_num[i])
             precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
             ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
 
@@ -405,15 +413,19 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                 print("Recall: ", len(recall))
                 print("Precision: ", len(precision))
                 print("AP: ", ap)
+                print("Area under curve: ", area)
+                # print("FPR: ", fpr)
+                # print("TPR: ", tpr)
 
-        precisions[class_names[i]].append(list(prec))
-        recalls[class_names[i]].append(list(rec))
-        maps[class_names[i]].append(float(ap))
+        tar = [list(prec), list(rec), float(ap),
+               list(fpr), list(tpr), float(area)]
+        for (x, y) in zip(evaluation, tar):
+            targets[x][class_names[i]].append(y)
 
     # Clean the class that has no instances detected
     # detection = clean_duplicates(detection)
-
-    return recalls, precisions, maps
+    # Zipped dict storing recalls, precisions, maps, fprs, tprs, aucs
+    return targets
 
 
 def debug_tools(i, output):
@@ -521,6 +533,108 @@ def build_voc_results(r, results, class_id, image_id, types, count):
         else:
             continue
     return results, count
+
+
+def format_interpolate(r, p):
+    assert isinstance(r, list), "Recalls must be list type!"
+    r = np.array(r)
+    p = np.array(p)
+    num = max([r[i].shape[0] for i in range(r.shape[0])])
+    r_new = np.linspace(0., 1., num)
+    p_news = np.zeros([len(r), num])
+    for i in range(len(r)):
+        f = interpolate.interp1d(r[i], p[i], kind='slinear')
+        p_new = f(r_new)
+        p_news[i, :] = p_new
+    assert p_news.shape == (len(r), num)
+    p_new = np.mean(p_news, axis=0)
+
+    return r_new, p_new
+
+
+def parse_evaluation_for_plot(cache, cla, ):
+    precision = cache["precisions"]
+    recall = cache["recalls"]
+    maps = cache["maps"]
+    fpr = cache["fprs"]
+    tpr = cache["tprs"]
+    aucs = cache["aucs"]
+
+    aps, pre, rec = maps[cla], precision[cla], recall[cla]
+    aucs, fpr, tpr = aucs[cla], fpr[cla], tpr[cla]
+
+    return pre, rec, aps, fpr, tpr, aucs
+
+
+def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
+                        fs=8, save=False, filename="curve"):
+    linestyles = ['-', '-.', ':', '--', '-']
+    font = {'family': 'Times New Roman',
+            'weight': 'bold',
+            'size': 20,
+            }
+    font_legend = {'family': 'Times New Roman',
+                   'weight': 'bold',
+                   'size': 15,
+                   }
+    colors = [(0.0, 1.0, 0.0), (0.0, 0.0, 0.95),
+              (1.0, 1.0, 0.0), (1.0, 0.0, 0.0),
+              (1.0, 0.0, 1.0)]
+
+    threshold = threshold or 0.5
+    # Plot the Precision-Recall curve
+    _, ax = plt.subplots(1, figsize=(fs, fs))
+    rcParams['xtick.direction'] = 'out'
+    rcParams['ytick.direction'] = 'out'
+    # Plot P-R curve
+    if curve == "pr":
+        if len(p) == 1:
+            _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5)
+            if isinstance(threshold, float):
+                ax.set_title("Precision-Recall Curve. AP@IoU {:.2f} = {:.3f}".format(threshold, ap[0]), font)
+            else:
+                ax.set_title("Precision-Recall Curve. AP@IoU 0.50-0.95 = {:.3f}".format(ap[0]), font)
+        else:
+            assert isinstance(threshold, list), \
+                "Multiple thresholds should be provided!"
+            for i in range(len(p)):
+                _ = ax.plot(r[i], p[i], ls=linestyles.pop(),
+                            c=colors.pop(), lw=1.5,
+                            label="AP={:.3f}(IoU={:.2f})".format(ap[i], threshold[i]))
+        ax.set_ylim(0, 1.05)
+        ax.set_xlim(0, 1.05)
+        plt.xlabel("Recall", font)
+        plt.ylabel("Precision", font)
+    # Plot ROC curve
+    if curve == "roc":
+        if len(p) == 1:
+            _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5,
+                        label="AUC={:.3f}(IoU={:.2f})".format(ap[0], threshold))
+
+        # Standard line
+        ax.plot([0, 1], [0, 1], "--b", lw=1.5, label="Standard line")
+        ax.set_title("ROC Curve", font)
+        ax.set_ylim(0, 1.0)
+        ax.set_xlim(0, 1.0)
+        plt.xlabel("False Positive Rate (FPR)", font)
+        plt.ylabel("True Positive Rate (TPR)", font)
+        plt.legend(loc="lower right", prop=font_legend,
+                   edgecolor='None', frameon=False,
+                   labelspacing=0.4)
+
+    plt.tick_params(labelsize=15)
+    labels = ax.get_xticklabels() + ax.get_yticklabels()
+    [label.set_fontname('Times New Roman') for label in labels]
+    # ax.set_xticks(np.array([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
+    ax.set_xticklabels(('0', '0.2', '0.4', '0.6', '0.8', '1.0'))
+    ax.set_yticklabels(('', '0.2', '0.4', '0.6', '0.8', '1.0'))
+
+    if save:
+        plt.margins(0, 0)
+        plt.savefig('./{}.png'.format(filename), dpi=300, bbox_inches='tight')
+        print("Save done!")
+
+    plt.show()
 
 
 def clean_duplicates(seq, remove):
