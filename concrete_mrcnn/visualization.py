@@ -329,8 +329,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # Debug
             if debug:
                 debug_tools(i, len(sorted_ind))
-            # debug_tools(i, region)
-            # debug_tools(i, image_ids)
+                # debug_tools(i, region)
+                # debug_tools(i, image_ids)
 
             # go down dets and mark TPs and FPs
             nd = len(image_ids)
@@ -338,7 +338,11 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             fp = np.zeros(nd)
             for d in range(nd):
                 if image_ids[d] not in gt[i].keys():
-                    fp[d] = 1
+                    if isinstance(threshold, (list, np.ndarray)):
+                        assert len(threshold) > 1
+                        fp[:, d] = 1
+                    else:
+                        fp[d] = 1
                     # print('No gt instances but detected out:', image_ids[d])
                     continue
 
@@ -371,8 +375,20 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                         debug_tools(i, jmax)
 
                 if isinstance(threshold, (list, np.ndarray)):
-                    for t in threshold:
-                        pass
+                    assert len(threshold) > 1
+                    tp = np.tile(tp, (len(threshold), 1))
+                    fp = np.tile(fp, (len(threshold), 1))
+                    if len(r['det']) == 1:
+                        r['det'] = [r['det'] for _ in range(len(threshold))]
+                    for ind, t in enumerate(threshold):
+                        if ovmax > t:
+                            if not r['det'][ind, jmax]:
+                                tp[ind, d] = 1.
+                                r['det'][ind, jmax] = 1
+                            else:
+                                fp[ind, d] = 1.
+                        else:
+                            fp[ind, d] = 1.
                 else:
                     assert isinstance(threshold, (float, int))
                     if ovmax > threshold:
@@ -393,17 +409,27 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # Check results
             # assert int(fp[-1] + tp[-1]) == region.shape[0]
             # compute precision recall
-            fp = np.cumsum(fp)
-            tp = np.cumsum(tp)
+            fp = np.cumsum(fp) if fp.ndim == 1 else np.cumsum(fp, axis=1)
+            tp = np.cumsum(tp) if tp.ndim == 1 else np.cumsum(tp, axis=1)
             # compute true positive rate and false negative
-            fpr = fp / fp[-1]
-            tpr = tp / tp[-1]
-            area = auc(fpr, tpr)
+            fpr = fp / fp[-1] if fp.ndim == 1 else fp / fp[:, -1].reshape(fp.shape[0], 1)
+            tpr = tp / tp[-1] if tp.ndim == 1 else tp / tp[:, -1].reshape(tp.shape[0], 1)
+            area = auc(fpr, tpr) if tp.ndim == 1 else [auc(fpr[ix, :], tpr[ix, :])
+                                                       for ix in range(tp.shape[0])]
             # avoid divide by zero in case the first detection matches a difficult
             # ground truth
             recall = tp / float(gt_num[i])
             precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
-            ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+
+            if recall.ndim == 1:
+                ap, prec, rec = voc_ap(recall, precision,
+                                       use_07_metric=False)
+            else:
+                ap, prec, rec = [], [], []
+                for ix in range(recall.shape[0]):
+                    a, p, r = voc_ap(recall[ix, :], precision[ix, :],
+                                     use_07_metric=False)
+                    ap.append(a), prec.append(p), rec.append(r)
 
             if debug:
                 # Debug
@@ -499,10 +525,6 @@ def build_voc_gts(dataset, config, image_id, class_id,
     for i, idx in enumerate(gt_class_id):
         if idx in class_id:
             ind = list(class_id).index(idx)
-            # if types == "bbox":
-            #     target = gt_bbox[i]
-            # if types == "mask":
-            #     target = gt_mask[:, :, i]
             if image_id not in gt[ind].keys():
                 gt[ind][image_id] = {'region': [], 'det': []}
             gt[ind][image_id]['region'].append(gt_bbox[i, :] if types == "bbox" else gt_mask[:, :, i])
@@ -524,10 +546,6 @@ def build_voc_results(r, results, class_id, image_id, types, count):
             ind = list(class_id).index(idx)
             results[ind]["image_ids"].append(image_id)
             results[ind]["confidence"].append(float(r["scores"][i]))
-            # if types == "bbox":
-            #     target = r["rois"][i]
-            # if types == "mask":
-            #     target = r["masks"][:, :, i]
             results[ind]["region"].append(r["rois"][i, :] if types == "bbox" else r["masks"][:, :, i])
             count[ind] += 1
         else:
