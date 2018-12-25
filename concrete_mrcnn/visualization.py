@@ -325,6 +325,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             region = np.array(detection[i]["region"])[sorted_ind, :] if types == "bbox" else \
                 np.array(detection[i]["region"])[:, :, sorted_ind]
             image_ids = [detection[i]["image_ids"][x] for x in sorted_ind]
+            # print(image_ids)
+            # print(len(set(image_ids)))
 
             # Debug
             if debug:
@@ -334,8 +336,10 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
 
             # go down dets and mark TPs and FPs
             nd = len(image_ids)
-            tp = np.zeros(nd)
-            fp = np.zeros(nd)
+            tp = np.zeros((len(threshold), nd)) if isinstance(threshold, list) and len(threshold) > 1 else \
+                np.zeros(nd)
+            fp = np.zeros((len(threshold), nd)) if isinstance(threshold, list) and len(threshold) > 1 else \
+                np.zeros(nd)
             for d in range(nd):
                 if image_ids[d] not in gt[i].keys():
                     if isinstance(threshold, (list, np.ndarray)):
@@ -352,13 +356,6 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                 ovmax = -np.inf
                 bbgt = np.array(r['region']).astype(np.float32)
 
-                if debug:
-                    m = 1
-                    if d == m:
-                        debug_tools(i, r)
-                        debug_tools(i, bb)
-                        debug_tools(i, bbgt)
-
                 if bbgt.size > 0:
                     # compute overlaps
                     # overlaps = voc_overlaps(bbgt, gt)
@@ -369,28 +366,32 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                     jmax = np.argmax(np.squeeze(overlaps))
 
                 if debug:
-                    if d == m:
+                    if d == debug:
+                        debug_tools(i, r)
+                        debug_tools(i, bb)
+                        debug_tools(i, bbgt)
+
                         debug_tools(i, overlaps)
                         debug_tools(i, ovmax)
                         debug_tools(i, jmax)
 
-                if isinstance(threshold, (list, np.ndarray)):
-                    assert len(threshold) > 1
-                    tp = np.tile(tp, (len(threshold), 1))
-                    fp = np.tile(fp, (len(threshold), 1))
-                    if len(r['det']) == 1:
-                        r['det'] = [r['det'] for _ in range(len(threshold))]
+                if isinstance(threshold, (list, np.ndarray)) and len(threshold) > 1:
+                    if len(r['det']) == 1 or not isinstance(r['det'][0], list):
+                        r['det'] = [copy.deepcopy(r['det']) for _ in range(len(threshold))]
+                        assert r['det'][1] == [False] * len(r['det'][1])
                     for ind, t in enumerate(threshold):
                         if ovmax > t:
-                            if not r['det'][ind, jmax]:
+                            if not r['det'][ind][jmax]:
                                 tp[ind, d] = 1.
-                                r['det'][ind, jmax] = 1
+                                r['det'][ind][jmax] = 1
                             else:
                                 fp[ind, d] = 1.
                         else:
                             fp[ind, d] = 1.
                 else:
-                    assert isinstance(threshold, (float, int))
+                    assert isinstance(threshold, (float, list))
+                    if isinstance(threshold, list) and len(threshold) == 1:
+                        threshold = threshold[0]
                     if ovmax > threshold:
                         if not r['det'][jmax]:
                             tp[d] = 1.
@@ -401,7 +402,7 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                         fp[d] = 1.
 
                 if debug:
-                    if d == m:
+                    if d == debug:
                         debug_tools(i, np.count_nonzero(tp))
                         debug_tools(i, np.count_nonzero(fp))
                         debug_tools(i, r['det'])
@@ -409,6 +410,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # Check results
             # assert int(fp[-1] + tp[-1]) == region.shape[0]
             # compute precision recall
+            # print("fp", fp)
+            # print("tp", tp)
             fp = np.cumsum(fp) if fp.ndim == 1 else np.cumsum(fp, axis=1)
             tp = np.cumsum(tp) if tp.ndim == 1 else np.cumsum(tp, axis=1)
             # compute true positive rate and false negative
@@ -421,15 +424,23 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             recall = tp / float(gt_num[i])
             precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
 
+            ap, prec, rec = [], [], []
             if recall.ndim == 1:
-                ap, prec, rec = voc_ap(recall, precision,
-                                       use_07_metric=False)
+                a, p, r = voc_ap(recall, precision,
+                                 use_07_metric=False)
+                ap.append(a), prec.append(p), rec.append(r)
             else:
-                ap, prec, rec = [], [], []
                 for ix in range(recall.shape[0]):
                     a, p, r = voc_ap(recall[ix, :], precision[ix, :],
                                      use_07_metric=False)
                     ap.append(a), prec.append(p), rec.append(r)
+
+            print("\nFP:", fp.shape)
+            print("TP:", tp.shape)
+            print("FPR:", fpr.shape)
+            print("TPR:", tpr.shape)
+            print("AREA:", area)
+            print("AP", ap)
 
             if debug:
                 # Debug
@@ -442,11 +453,15 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                 print("Area under curve: ", area)
                 # print("FPR: ", fpr)
                 # print("TPR: ", tpr)
-
-        tar = [list(prec), list(rec), float(ap),
-               list(fpr), list(tpr), float(area)]
+        if not isinstance(area, list):
+            area = [area]
+        tar = [list(prec), list(rec), list(ap),
+               list(fpr), list(tpr), list(area)]
         for (x, y) in zip(evaluation, tar):
-            targets[x][class_names[i]].append(y)
+            if x == "maps" or "aucs":
+                targets[x][class_names[i]] = y
+            else:
+                targets[x][class_names[i]].append(y)
 
     # Clean the class that has no instances detected
     # detection = clean_duplicates(detection)
@@ -586,7 +601,7 @@ def parse_evaluation_for_plot(cache, cla, ):
 
 def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
                         fs=8, save=False, filename="curve"):
-    linestyles = ['-', '-.', ':', '--', '-']
+    linestyles = ['-', '--', ':', '-.', '-']
     font = {'family': 'Times New Roman',
             'weight': 'bold',
             'size': 20,
@@ -595,42 +610,54 @@ def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
                    'weight': 'bold',
                    'size': 15,
                    }
-    colors = [(0.0, 1.0, 0.0), (0.0, 0.0, 0.95),
-              (1.0, 1.0, 0.0), (1.0, 0.0, 0.0),
-              (1.0, 0.0, 1.0)]
+    colors = [(0.0, 1.0, 0.0), (0.0, 0.0, 0.1),
+              (1.0, 0.0, 1.0), (1.0, 0.0, 0.0),
+              (1.0, 1.0, 0.0)]
 
     threshold = threshold or 0.5
     # Plot the Precision-Recall curve
     _, ax = plt.subplots(1, figsize=(fs, fs))
-    rcParams['xtick.direction'] = 'out'
-    rcParams['ytick.direction'] = 'out'
+
     # Plot P-R curve
     if curve == "pr":
         if len(p) == 1:
+            if isinstance(threshold, list):
+                threshold = threshold[0]
+            ax.set_title("Precision-Recall Curve. AP@IoU {:.2f} = {:.3f}".format(threshold, ap[0]), font)
             _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5)
-            if isinstance(threshold, float):
-                ax.set_title("Precision-Recall Curve. AP@IoU {:.2f} = {:.3f}".format(threshold, ap[0]), font)
-            else:
-                ax.set_title("Precision-Recall Curve. AP@IoU 0.50-0.95 = {:.3f}".format(ap[0]), font)
         else:
             assert isinstance(threshold, list), \
                 "Multiple thresholds should be provided!"
+            ax.set_title("Precision-Recall Curve", font)
             for i in range(len(p)):
-                _ = ax.plot(r[i], p[i], ls=linestyles.pop(),
-                            c=colors.pop(), lw=1.5,
+                _ = ax.plot(r[i], p[i], ls=linestyles[i],
+                            c=colors[i], lw=1.5,
                             label="AP={:.3f}(IoU={:.2f})".format(ap[i], threshold[i]))
         ax.set_ylim(0, 1.05)
         ax.set_xlim(0, 1.05)
         plt.xlabel("Recall", font)
         plt.ylabel("Precision", font)
+        plt.legend(loc="lower left", prop=font_legend,
+                   edgecolor='None', frameon=False,
+                   labelspacing=0.4)
     # Plot ROC curve
     if curve == "roc":
         if len(p) == 1:
+            if isinstance(threshold, list):
+                threshold = threshold[0]
             _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5,
                         label="AUC={:.3f}(IoU={:.2f})".format(ap[0], threshold))
+        else:
+            assert isinstance(threshold, list), \
+                "Multiple thresholds should be provided!"
+            for i in range(len(p)):
+                _ = ax.plot(r[i], p[i], ls="-",
+                            c=colors[i], lw=1.5,
+                            label="AUC={:.3f}(IoU={:.2f})".format(ap[i], threshold[i]))
 
         # Standard line
-        ax.plot([0, 1], [0, 1], "--b", lw=1.5, label="Standard line")
+        ax.plot([0, 1], [0, 1], ls='--', c='#778899', lw=1.5, label="Standard line")
+        # Set plot title
         ax.set_title("ROC Curve", font)
         ax.set_ylim(0, 1.0)
         ax.set_xlim(0, 1.0)
@@ -646,6 +673,8 @@ def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
     # ax.set_xticks(np.array([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
     ax.set_xticklabels(('0', '0.2', '0.4', '0.6', '0.8', '1.0'))
     ax.set_yticklabels(('', '0.2', '0.4', '0.6', '0.8', '1.0'))
+    rcParams['xtick.direction'] = 'out'
+    rcParams['ytick.direction'] = 'out'
 
     if save:
         plt.margins(0, 0)
