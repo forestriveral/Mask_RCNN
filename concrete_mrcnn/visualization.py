@@ -207,7 +207,7 @@ def contour_compute(contour, image_area, scale=None):
 
 
 def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
-                  limit=None, types="mask", save=False):
+                  limit=None, types="bbox", save=False):
     # Pick COCO images from the dataset
     if image_ids:
         image_ids = image_ids
@@ -241,6 +241,7 @@ def voc_ap_format(model, config, dataset, image_ids=None, class_names=None,
 
     gt = [{} for _ in range(len(class_id))]
     gt_num = [0 for _ in range(len(class_id))]
+    print("Ready to formatting on {} ...".format(types))
     for i, image_id in enumerate(image_ids):
         # Load annotations gt information
         gt, gt_num, image = build_voc_gts(dataset, config, image_id, class_id,
@@ -300,6 +301,7 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             print("Loading detection results file ...")
             detection = json.load(f)
 
+    print("Ready to evaluate on {} ...".format(types))
     # Copy gt file
     gt = copy.deepcopy(groundtruth)
     # Loop for every class need to compute ap
@@ -323,16 +325,8 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # sort by confidence
             sorted_ind = np.argsort(-1 * np.array(detection[i]["confidence"]))
             region = np.array(detection[i]["region"])[sorted_ind, :] if types == "bbox" else \
-                np.array(detection[i]["region"])[:, :, sorted_ind]
+                np.array(detection[i]["region"]).transpose((1, 2, 0))[..., sorted_ind]
             image_ids = [detection[i]["image_ids"][x] for x in sorted_ind]
-            # print(image_ids)
-            # print(len(set(image_ids)))
-
-            # Debug
-            if debug:
-                debug_tools(i, len(sorted_ind))
-                # debug_tools(i, region)
-                # debug_tools(i, image_ids)
 
             # go down dets and mark TPs and FPs
             nd = len(image_ids)
@@ -349,27 +343,28 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
                         fp[d] = 1
                     # print('No gt instances but detected out:', image_ids[d])
                     continue
-
                 r = gt[i][image_ids[d]]
                 bb = region[d, :].astype(np.float32)[None, ...] if types == "bbox" \
-                    else region[:, :, d][..., None]
+                    else region[:, :, d][:, :, None]
                 ovmax = -np.inf
-                bbgt = np.array(r['region']).astype(np.float32)
+                bbgt = np.array(r['region']).astype(np.float32) if types == "bbox" \
+                    else np.array(r['region']).transpose((1, 2, 0))
 
                 if bbgt.size > 0:
                     # compute overlaps
                     # overlaps = voc_overlaps(bbgt, gt)
                     overlaps = utils.compute_overlaps(bbgt, bb).transpose(1, 0) if types == "bbox" else \
                         utils.compute_overlaps_masks(bbgt, bb).transpose(1, 0)
-                    assert overlaps.shape == (1, bbgt.shape[0])
+                    assert overlaps.shape == (1, bbgt.shape[0]) if types == "bbox" \
+                        else (1, bbgt.shape[-1])
                     ovmax = np.max(np.squeeze(overlaps))
                     jmax = np.argmax(np.squeeze(overlaps))
 
                 if debug:
                     if d == debug:
                         debug_tools(i, r)
-                        debug_tools(i, bb)
-                        debug_tools(i, bbgt)
+                        debug_tools(i, bb.shape)
+                        debug_tools(i, bbgt.shape)
 
                         debug_tools(i, overlaps)
                         debug_tools(i, ovmax)
@@ -417,51 +412,54 @@ def voc_ap_compute(dataset, class_id, detection, groundtruth, gt_num,
             # compute true positive rate and false negative
             fpr = fp / fp[-1] if fp.ndim == 1 else fp / fp[:, -1].reshape(fp.shape[0], 1)
             tpr = tp / tp[-1] if tp.ndim == 1 else tp / tp[:, -1].reshape(tp.shape[0], 1)
-            area = auc(fpr, tpr) if tp.ndim == 1 else [auc(fpr[ix, :], tpr[ix, :])
-                                                       for ix in range(tp.shape[0])]
+
+            # Compute area under curve
+            area = np.array([auc(fpr, tpr)]) if tp.ndim == 1 else \
+                np.array([auc(fpr[ix, :], tpr[ix, :]) for ix in range(tp.shape[0])])
             # avoid divide by zero in case the first detection matches a difficult
             # ground truth
             recall = tp / float(gt_num[i])
             precision = tp / np.maximum(tp + fp, np.finfo(np.float64).eps)
 
-            ap, prec, rec = [], [], []
             if recall.ndim == 1:
-                a, p, r = voc_ap(recall, precision,
-                                 use_07_metric=False)
-                ap.append(a), prec.append(p), rec.append(r)
+                ap, prec, rec = voc_ap(recall, precision, use_07_metric=False)
+                ap, prec, rec = np.array([ap]), prec[None, :], rec[None, :]
             else:
+                ap = np.zeros([fp.shape[0]])
+                prec = np.zeros([precision.shape[0], precision.shape[1] + 2])
+                rec = np.zeros([recall.shape[0], recall.shape[1] + 2])
                 for ix in range(recall.shape[0]):
-                    a, p, r = voc_ap(recall[ix, :], precision[ix, :],
-                                     use_07_metric=False)
-                    ap.append(a), prec.append(p), rec.append(r)
+                    a, p, r = voc_ap(recall[ix, :], precision[ix, :], use_07_metric=False)
+                    ap[ix] = a
+                    prec[ix, :] = p
+                    rec[ix, :] = r
 
             print("\nFP:", fp.shape)
             print("TP:", tp.shape)
             print("FPR:", fpr.shape)
             print("TPR:", tpr.shape)
-            print("AREA:", area)
-            print("AP", ap)
-
+            print("AREA:", area, area.shape)
+            print("AP", ap, ap.shape)
             if debug:
                 # Debug
                 # print("GT: ", gt[0])
-                print("\nFP: ", fp[-1])
-                print("TP: ", tp[-1])
+                print("\nFP: ", fp)
+                print("TP: ", tp)
                 print("Recall: ", len(recall))
                 print("Precision: ", len(precision))
                 print("AP: ", ap)
                 print("Area under curve: ", area)
                 # print("FPR: ", fpr)
                 # print("TPR: ", tpr)
-        if not isinstance(area, list):
-            area = [area]
-        tar = [list(prec), list(rec), list(ap),
-               list(fpr), list(tpr), list(area)]
-        for (x, y) in zip(evaluation, tar):
-            if x == "maps" or "aucs":
-                targets[x][class_names[i]] = y
-            else:
-                targets[x][class_names[i]].append(y)
+
+            # Pad with start and end values to simplify the math
+            fpr = np.pad(fpr, ((0, 0), (1, 1)), "constant", constant_values=(0, 1)) if fpr.ndim > 1 \
+                else np.pad(fpr, (1, 1), "constant", constant_values=(0, 1))[None, :]
+            tpr = np.pad(tpr, ((0, 0), (1, 1)), "constant", constant_values=(0, 1)) if tpr.ndim > 1 \
+                else np.pad(tpr, (1, 1), "constant", constant_values=(0, 1))[None, :]
+
+        for (x, y) in zip(evaluation, [prec, rec, ap, fpr, tpr, area]):
+            targets[x][class_names[i]] = y
 
     # Clean the class that has no instances detected
     # detection = clean_duplicates(detection)
@@ -585,7 +583,31 @@ def format_interpolate(r, p):
     return r_new, p_new
 
 
-def parse_evaluation_for_plot(cache, cla, ):
+def print_data_info(*args):
+    for v in args:
+        print(v.shape, type(v))
+
+
+def plot_voc_curve(data, classes, threshold, curve=None,
+                   fs=8, save=False, name="curve"):
+    if curve and isinstance(curve, str):
+        curve = [curve]
+    else:
+        curve = curve or ["pr", "roc"]
+    if isinstance(classes, str):
+        classes = [classes]
+    for c in classes:
+        pre, rec, aps, fpr, tpr, aucs = parse_evaluation(data, c)
+        print_data_info(pre, rec, aps, fpr, tpr, aucs)
+        if "pr" in curve:
+            plot_evaluate_curve(aps, pre, rec, threshold=threshold, curve="pr",
+                                fs=fs, save=save, filename=name + "_pr")
+        if "roc" in curve:
+            plot_evaluate_curve(aucs, tpr, fpr, threshold=threshold, curve="roc",
+                                fs=fs, save=save, filename=name + "_roc")
+
+
+def parse_evaluation(cache, cla):
     precision = cache["precisions"]
     recall = cache["recalls"]
     maps = cache["maps"]
@@ -610,9 +632,9 @@ def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
                    'weight': 'bold',
                    'size': 15,
                    }
-    colors = [(0.0, 1.0, 0.0), (0.0, 0.0, 0.1),
-              (1.0, 0.0, 1.0), (1.0, 0.0, 0.0),
-              (1.0, 1.0, 0.0)]
+    colors = [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0),
+               (0.0, 1.0, 0.0), (1.0, 0.0, 1.0),
+               (1.0, 1.0, 0.0)]
 
     threshold = threshold or 0.5
     # Plot the Precision-Recall curve
@@ -620,12 +642,14 @@ def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
 
     # Plot P-R curve
     if curve == "pr":
-        if len(p) == 1:
+        if p.shape[0] == 1:
+            print("\nSingle {} line".format(curve))
             if isinstance(threshold, list):
                 threshold = threshold[0]
             ax.set_title("Precision-Recall Curve. AP@IoU {:.2f} = {:.3f}".format(threshold, ap[0]), font)
             _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5)
         else:
+            print("\nMultiple {} lines".format(curve))
             assert isinstance(threshold, list), \
                 "Multiple thresholds should be provided!"
             ax.set_title("Precision-Recall Curve", font)
@@ -637,20 +661,22 @@ def plot_evaluate_curve(ap, p, r, threshold=None, curve="pr",
         ax.set_xlim(0, 1.05)
         plt.xlabel("Recall", font)
         plt.ylabel("Precision", font)
-        plt.legend(loc="lower left", prop=font_legend,
+        plt.legend(loc="best", prop=font_legend,
                    edgecolor='None', frameon=False,
                    labelspacing=0.4)
     # Plot ROC curve
     if curve == "roc":
-        if len(p) == 1:
+        if p.shape[0] == 1:
+            print("\nSingle {} line".format(curve))
             if isinstance(threshold, list):
                 threshold = threshold[0]
             _ = ax.plot(r[0], p[0], ls='-', c='#CD0000', lw=1.5,
                         label="AUC={:.3f}(IoU={:.2f})".format(ap[0], threshold))
         else:
+            print("\nMultiple {} lines".format(curve))
             assert isinstance(threshold, list), \
                 "Multiple thresholds should be provided!"
-            for i in range(len(p)):
+            for i in range(p.shape[0]):
                 _ = ax.plot(r[i], p[i], ls="-",
                             c=colors[i], lw=1.5,
                             label="AUC={:.3f}(IoU={:.2f})".format(ap[i], threshold[i]))
